@@ -1,6 +1,6 @@
 function [map, statistics] = mark_static_obstacles(map, geometry, vehicle_config)
 %MARK_STATIC_OBSTACLES 永久标记边界和按车辆尺寸膨胀的静态障碍物。
-% 输入：时空地图、summon_map输出、车辆配置。输出：更新地图与二维块统计。
+% 输入：时空地图、summon_map的输出、车辆配置。输出：更新地图与二维块统计。
 % 无yaw维的静态图采用后轴膨胀矩形全航向包络，保守半径来自最远车角。
 % 加半块对角线保证整个资源块可行；支持凹边界/多边形长边，不只查顶点。
 if ~isstruct(geometry) || ~isfield(geometry,'boundary_xy')
