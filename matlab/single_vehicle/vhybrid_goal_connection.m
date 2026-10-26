@@ -9,6 +9,42 @@ function [success, connection_nodes, statistics] = vhybrid_goal_connection( ...
 
 cfg = planner_config.vhybrid;
 dyn = planner_config.dynamics;
+% 缺省仍接受首条可行连接；Day7可按同一父节点的完整累计代价择优。
+selection_mode = 'first_feasible';
+if isfield(cfg,'goal_connection_selection')
+    selection_mode = cfg.goal_connection_selection;
+    if ~((ischar(selection_mode) && isrow(selection_mode)) || ...
+            (isstring(selection_mode) && isscalar(selection_mode))) || ...
+            ~any(strcmp(selection_mode,{'first_feasible','lowest_cost'}))
+        error('VHybrid:InvalidGoalConnectionSelection', ...
+            'goal_connection_selection 必须为 first_feasible 或 lowest_cost。');
+    end
+end
+select_lowest_cost = strcmp(selection_mode,'lowest_cost');
+best_connection_cost = Inf;
+% 缺省不限制连接累计转角，保留Day6；有限门限可拒绝近目标整圈绕行。
+max_connection_turn = Inf;
+if isfield(cfg,'goal_connection_max_turn_rad')
+    max_connection_turn = cfg.goal_connection_max_turn_rad;
+    if ~isnumeric(max_connection_turn) || ~isreal(max_connection_turn) || ...
+            ~isscalar(max_connection_turn) || isnan(max_connection_turn) || ...
+            max_connection_turn <= 0
+        error('VHybrid:InvalidGoalConnectionMaxTurn', ...
+            'goal_connection_max_turn_rad 必须为正有限实数标量或 Inf。');
+    end
+end
+% Day7 可选多半径连接；缺省仅使用原最小半径，保留 Day6 行为。
+radius_scales = 1;
+if isfield(cfg,'goal_connection_radius_scales')
+    radius_scales = cfg.goal_connection_radius_scales;
+    if ~isnumeric(radius_scales) || ~isreal(radius_scales) || ...
+            isempty(radius_scales) || ~isvector(radius_scales) || ...
+            any(~isfinite(radius_scales(:))) || any(radius_scales(:)<1)
+        error('VHybrid:InvalidGoalConnectionRadiusScales', ...
+            'goal_connection_radius_scales 必须为有限且不小于1的非空实数向量。');
+    end
+    radius_scales = unique(double(radius_scales(:).'),'stable');
+end
 if nargin < 6, st_map = []; end
 if nargin < 7, higher_priority_trajectories = []; end
 has_context = ~isempty(st_map) || ~isempty(higher_priority_trajectories);
@@ -17,10 +53,25 @@ connection_nodes = repmat(vhybrid_node(), 0, 1);
 statistics = struct('candidates', 0, 'collision_pruned', 0, ...
     'constraint_pruned', 0, 'terminal_speed', NaN, 'connection_length_m', NaN, ...
     'dynamic_pruned',0,'resource_pruned',0,'reason_counts',struct(), ...
-    'conflict_examples',{{}},'geometric_candidates',0,'boundary_geometry_pruned',0);
+    'conflict_examples',{{}},'geometric_candidates',0,'boundary_geometry_pruned',0, ...
+    'turning_geometry_pruned',0, ...
+    'cost_bound_enabled',false,'cost_bound_pruned',0, ...
+    'cost_bound_integration_pruned',0);
 start = [parent_node.x,parent_node.y,parent_node.theta,parent_node.v,parent_node.t];
 gear = 1;
 if isfield(parent_node,'gear'), gear = parent_node.gear; end
+% 同挡连接不含换挡项；只在实际累积代价的每一项均非负时剪枝。
+% 可关闭剪枝以与完整枚举作精确回归比较，first_feasible始终不启用。
+pruning_requested = true;
+if select_lowest_cost && isfield(cfg,'goal_connection_cost_pruning_enabled')
+    pruning_requested = cfg.goal_connection_cost_pruning_enabled;
+    if ~islogical(pruning_requested) || ~isscalar(pruning_requested)
+        error('VHybrid:InvalidGoalConnectionCostPruning', ...
+            'goal_connection_cost_pruning_enabled 必须为逻辑标量。');
+    end
+end
+statistics.cost_bound_enabled = select_lowest_cost && pruning_requested && ...
+    nonnegativeConnectionCosts(cfg,gear,parent_node.g_cost);
 if gear < 0 && isfield(cfg,'max_reverse_speed_mps')
     dyn.v_max_mps = min(dyn.v_max_mps,cfg.max_reverse_speed_mps);
 end
@@ -28,6 +79,8 @@ goal_state = double(goal_state(:).');
 if hypot(start(1)-goal_state(1),start(2)-goal_state(2)) > cfg.goal_connection_distance_m
     return;
 end
+% 连接过程冻结静态几何；只在入口检查缓存源，逐积分点使用可信内核。
+map = prepare_static_context(map,vehicle_config);
 delta_max = min(vehicle_config.steering.maximum_steer_rad, dyn.delta_max_rad);
 radius = vehicle_config.dimensions_m.wheelbase / tan(delta_max);
 % 倒车的运动切向比车身航向多 pi；同挡位连接不隐式换挡。
@@ -35,7 +88,25 @@ motion_start = start(1:3); motion_goal = goal_state(1:3);
 if gear<0
     motion_start(3) = motion_start(3)+pi; motion_goal(3) = motion_goal(3)+pi;
 end
-curves = vhybrid_dubins_candidates(motion_start,motion_goal,radius);
+curves = repmat(struct('lengths',zeros(1,3),'types',zeros(1,3),'radius_m',radius),0,1);
+for radius_scale = radius_scales
+    actual_radius = radius*radius_scale;
+    if ~isfinite(actual_radius)
+        error('VHybrid:InvalidGoalConnectionRadiusScales', ...
+            'goal_connection_radius_scales 产生了非有限转弯半径。');
+    end
+    radius_curves = vhybrid_dubins_candidates(motion_start,motion_goal,actual_radius);
+    if isempty(radius_curves), continue; end
+    for curve_id = 1:numel(radius_curves)
+        radius_curves(curve_id).radius_m = actual_radius;
+    end
+    curves = [curves;radius_curves]; %#ok<AGROW>
+end
+% 不同半径的候选统一按几何总弧长排序；同长时保持既有候选次序。
+if ~isempty(curves)
+    [~,curve_order] = sort(arrayfun(@(candidate)sum(candidate.lengths),curves));
+    curves = curves(curve_order);
+end
 % 采样的是连接段巡航速度，终端速度始终为目标停车约束。
 speeds = unique([cfg.goal_connection_speed_samples_mps(:).', ...
     cfg.reference_speed_mps, start(4), cfg.terminal_speed_mps]);
@@ -43,9 +114,19 @@ speeds = sort(speeds, 'descend');
 for curve_id = 1:numel(curves)
     curve = curves(curve_id);
     statistics.geometric_candidates = statistics.geometric_candidates+1;
+    % L/R段弧长除以该候选自身半径得到绝对转角；直线段不计入。
+    % 这是几何筛选，不通过换速度或积分采样绕过门限。
+    cumulative_turn = sum(curve.lengths(curve.types~=0))/curve.radius_m;
+    if cumulative_turn > max_connection_turn
+        statistics.turning_geometry_pruned = statistics.turning_geometry_pruned+1;
+        key = 'excessive_connection_turn';
+        if ~isfield(statistics.reason_counts,key), statistics.reason_counts.(key) = 0; end
+        statistics.reason_counts.(key) = statistics.reason_counts.(key)+1;
+        continue;
+    end
     % 先用车身角点完整圆弧极值证明是否必定越界，再尝试速度相位。
     % 这避免反复用不同速度积分同一条必不可行的几何曲线。
-    [outside,~] = vhybrid_curve_boundary_check(start,curve,radius,map,vehicle_config,gear);
+    [outside,~] = vhybrid_curve_boundary_check(start,curve,curve.radius_m,map,vehicle_config,gear);
     if outside
         statistics.boundary_geometry_pruned = statistics.boundary_geometry_pruned+1;
         key = 'analytic_boundary_collision';
@@ -55,18 +136,30 @@ for curve_id = 1:numel(curves)
     end
     for cruise_speed = speeds
         statistics.candidates = statistics.candidates + 1;
-        [phases, feasible] = speedPhases(sum(curve.lengths),start(4), ...
+        [phases, feasible] = vhybrid_speed_phases(sum(curve.lengths),start(4), ...
             cfg.terminal_speed_mps,cruise_speed,dyn);
         if ~feasible
             statistics.constraint_pruned = statistics.constraint_pruned + 1;
             continue;
         end
+        cost_limit = Inf;
+        if statistics.cost_bound_enabled && isfinite(best_connection_cost)
+            cost_limit = best_connection_cost;
+        end
+        actual_delta = delta_max;
+        if curve.radius_m ~= radius
+            actual_delta = atan(vehicle_config.dimensions_m.wheelbase/curve.radius_m);
+        end
         [trial, reason] = integrateCurve(parent_node, goal_state, curve, phases, ...
-            delta_max, map, vehicle_config, planner_config);
+            actual_delta, map, vehicle_config, planner_config, cost_limit);
         if strcmp(reason,'collision')
             statistics.collision_pruned = statistics.collision_pruned + 1;
             % 静态碰撞仅依赖几何，对同一曲线换速度无法绕开障碍物。
             break;
+        elseif strcmp(reason,'cost_bound')
+            statistics.cost_bound_pruned = statistics.cost_bound_pruned+1;
+            statistics.cost_bound_integration_pruned = statistics.cost_bound_integration_pruned+1;
+            continue;
         elseif ~strcmp(reason,'ok')
             statistics.constraint_pruned = statistics.constraint_pruned + 1;
             continue;
@@ -100,11 +193,14 @@ for curve_id = 1:numel(curves)
                 continue;
             end
         end
-        connection_nodes = trial;
-        statistics.terminal_speed = trial(end).v;
-        statistics.connection_length_m = sum(curve.lengths);
-        success = true;
-        return;
+        if ~select_lowest_cost || trial(end).g_cost < best_connection_cost
+            connection_nodes = trial;
+            statistics.terminal_speed = trial(end).v;
+            statistics.connection_length_m = sum(curve.lengths);
+            best_connection_cost = trial(end).g_cost;
+            success = true;
+        end
+        if ~select_lowest_cost, return; end
     end
 end
 
@@ -138,32 +234,11 @@ end
 end
 
 
-function [phases, feasible] = speedPhases(distance, v0, vf, cap, dyn)
-%SPEEDPHASES 三角形/梯形速度剖面，用 v²-v0²=2*a*s 保证路程一致。
-% 相位字段：[持续时间, 加速度, 相位末速度]，终端 vf 是硬约束。
-phases = zeros(0,3); feasible = false;
-ap = dyn.a_max_mps2; ab = -dyn.a_min_mps2;
-if distance <= 1e-10 || ap <= 0 || ab <= 0 || cap <= 0 || ...
-        cap < max(v0,vf) || cap > dyn.v_max_mps || min(v0,vf) < dyn.v_min_mps
-    return;
-end
-peak = min(cap,sqrt((2*ap*ab*distance+ab*v0^2+ap*vf^2)/(ap+ab)));
-if peak < max(v0,vf)-1e-10
-    return; % 剩余距离不足以在约束内停车；不能人为截断速度。
-end
-peak = max(peak,max(v0,vf));
-ta = (peak-v0)/ap; tb = (peak-vf)/ab;
-cruise_distance = distance-(peak^2-v0^2)/(2*ap)-(peak^2-vf^2)/(2*ab);
-tc = max(0,cruise_distance)/peak;
-phases = [ta,ap,peak; tc,0,peak; tb,-ab,vf];
-phases = phases(phases(:,1)>1e-12,:);
-feasible = ~isempty(phases);
-end
-
 function [nodes, reason] = integrateCurve(parent, goal, curve, phases, ...
-    delta_max, map, vehicle, planner)
+    actual_delta, map, vehicle, planner, cost_limit)
 %INTEGRATECURVE 以相位/圆弧边界为事件切步，积分同一个自行车模型。
 cfg = planner.vhybrid; dyn = planner.dynamics;
+static_context = map.collision_context;
 nodes = repmat(vhybrid_node(),0,1); reason = 'constraint';
 state = [parent.x,parent.y,parent.theta,parent.v,parent.t];
 gear = parent.gear;
@@ -186,7 +261,7 @@ while segment <= 3 && phase <= size(phases,1)
     % 根据剩余相位时间修正舍入误差；不修改状态，不超过加速度边界。
     acceleration = (phases(phase,3)-state(4))/time_remaining;
     acceleration = max(dyn.a_min_mps2,min(dyn.a_max_mps2,acceleration));
-    steering = gear*curve.types(segment)*delta_max;
+    steering = gear*curve.types(segment)*actual_delta;
     dt = min(cfg.goal_connection_step_s,time_remaining);
     ds_limit = min(segment_remaining,cfg.collision_check_step_m);
     if segment == 3 && segment_remaining <= 1e-10
@@ -204,10 +279,15 @@ while segment <= 3 && phase <= size(phases,1)
     if ~valid || abs(ds) <= 0 || next(5) <= state(5)
         return;
     end
-    if day6_static_collision_check(next(1:3),map,vehicle)
+    if day6_static_collision_core(next(1:3),static_context)
         reason = 'collision'; return;
     end
     [g,h] = vhybrid_cost(previous,next,goal,planner,ds,steering,gear,false);
+    % 已付代价也是完整路径的下界；非负项的后续累加不能再降低g。
+    % 不使用h/f，也不假设每个航向增量小于pi。
+    if isfinite(cost_limit) && isfinite(g) && g >= cost_limit
+        reason = 'cost_bound'; return;
+    end
     indices = [floor((next(1)-map.bounds(1))/cfg.xy_grid_resolution_m), ...
         floor((next(2)-map.bounds(2))/cfg.xy_grid_resolution_m), ...
         round((mod(next(3)+pi,2*pi))/cfg.yaw_grid_resolution_rad), ...
@@ -224,4 +304,24 @@ if ~isempty(nodes) && hypot(state(1)-goal(1),state(2)-goal(2)) <= cfg.goal_posit
         abs(state(4)-cfg.terminal_speed_mps) <= cfg.goal_speed_tolerance_mps
     reason = 'ok';
 end
+end
+
+function enabled = nonnegativeConnectionCosts(cfg,gear,parent_cost)
+%NONNEGATIVECONNECTIONCOSTS 检查vhybrid_cost中同挡连接实际使用的系数。
+names = {'weight_distance','weight_speed_change','weight_reference_speed', ...
+    'weight_heading_change','weight_time'};
+enabled = finiteRealScalar(parent_cost) && finiteRealScalar(cfg.reference_speed_mps);
+for k = 1:numel(names)
+    value = cfg.(names{k});
+    if ~finiteRealScalar(value) || value < 0
+        enabled = false; return;
+    end
+end
+if gear < 0 && isfield(cfg,'reverse_penalty')
+    enabled = enabled && finiteRealScalar(cfg.reverse_penalty) && cfg.reverse_penalty >= 0;
+end
+end
+
+function valid = finiteRealScalar(value)
+valid = isnumeric(value) && isreal(value) && isscalar(value) && isfinite(value);
 end

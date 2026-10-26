@@ -5,12 +5,26 @@ function path = summon_vhybrid_astar(start_state,goal_state,map,vehicle_config,p
 % initial_gear_mode='auto' 时，静止起点把前进/倒车作为两种起步前已选挡位，
 % 由同一次搜索选择；运行中的方向切换仍须停稳并等待配置换挡时间。
 % options.initial_gear 可选锁定初挡位，优先于自动模式。v 始终为非负速度大小。
+% vhybrid.solution_refinement_time_s 缺省为0：首条完整验收解立即返回。
+% 正值表示首解后继续使用同一搜索树的固定时间预算，只保留累计g更小的
+% 完整验收解；预算不会因改进而重置，不依据h宣称全局最优。
 % 状态按x/y/theta/v/t/gear查重。控制由Day3挡位适配模型积分；所有运动段在加入
 % Open之前接受静态与动态碰撞验收。无动态参数时保持Day4单车接口行为。
 if nargin < 6, st_map = []; end
 if nargin < 7, higher_priority_trajectories = []; end
 if nargin < 8, options = struct(); end
 cfg = planner_config.vhybrid;
+refinement_time_s = 0;
+if isfield(cfg,'solution_refinement_time_s')
+    refinement_time_s = cfg.solution_refinement_time_s;
+    if ~isnumeric(refinement_time_s) || ~isreal(refinement_time_s) || ...
+            ~isscalar(refinement_time_s) || ~isfinite(refinement_time_s) || refinement_time_s<0
+        error('VHybridAStar:InvalidRefinementTime', ...
+            'solution_refinement_time_s 必须为有限且不小于0的实数标量。');
+    end
+    refinement_time_s = double(refinement_time_s);
+end
+refinement_enabled = refinement_time_s>0;
 initial_gear = 1;
 if isfield(cfg,'initial_gear'), initial_gear = cfg.initial_gear; end
 initial_gear_mode = 'fixed';
@@ -47,6 +61,7 @@ end
 timer_id = tic;
 map = prepare_static_context(map,vehicle_config);
 stats = initStats();
+stats.solution_refinement_time_s = refinement_time_s;
 stats.initial_gears = initial_gears;
 stats.initial_gear_mode = initial_gear_mode;
 [start_collision, ~] = day6_static_collision_check(start_state(1:3), map, vehicle_config);
@@ -95,13 +110,23 @@ for root_id = 1:node_count
     open_set.push(start_node);
 end
 stats.open_peak = node_count;
+incumbent = emptyPath();
 
 while ~open_set.is_empty()
     if toc(timer_id) > cfg.max_search_time_s
+        if incumbent.valid
+            path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'search_time_limit');
+            return;
+        end
         path.error_code = uint8(6);
         path.search_statistics = finishStats(stats, timer_id);
         path.search_nodes = nodes(1:node_count);
         path.failure_diagnostics = failureDiagnostics(path,planner_config);
+        return;
+    end
+    if refinement_enabled && incumbent.valid && ...
+            toc(timer_id)>=stats.first_solution_time_s+refinement_time_s
+        path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'refinement_time_limit');
         return;
     end
     [current, valid] = open_set.pop_min();
@@ -125,7 +150,13 @@ while ~open_set.is_empty()
         path = validateFinalState(path, goal_state, cfg);
         path = validateKinematics(path, map, vehicle_config, planner_config);
         path = validateDynamic(path,vehicle_config,planner_config,st_map,higher_priority_trajectories);
-        if path.valid, return; end
+        if path.valid
+            [incumbent,stats] = acceptSolution(path,current.g_cost,incumbent,stats,timer_id);
+            if ~refinement_enabled
+                path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'disabled');
+                return;
+            end
+        end
         continue;
     end
 
@@ -138,6 +169,15 @@ while ~open_set.is_empty()
             connection_stats.geometric_candidates;
         stats.goal_connection_boundary_pruned = stats.goal_connection_boundary_pruned + ...
             connection_stats.boundary_geometry_pruned;
+        stats.goal_connection_turning_pruned = stats.goal_connection_turning_pruned + ...
+            connection_stats.turning_geometry_pruned;
+        stats.goal_connection_cost_bound_pruned = stats.goal_connection_cost_bound_pruned + ...
+            connection_stats.cost_bound_pruned;
+        stats.goal_connection_cost_bound_integration_pruned = ...
+            stats.goal_connection_cost_bound_integration_pruned + ...
+            connection_stats.cost_bound_integration_pruned;
+        stats.goal_connection_cost_bound_enabled = stats.goal_connection_cost_bound_enabled || ...
+            connection_stats.cost_bound_enabled;
         stats = mergeDynamicStats(stats,connection_stats,planner_config);
         if connected && node_count + numel(connection_nodes) <= cfg.max_search_nodes
             previous_id = current.node_id;
@@ -154,11 +194,25 @@ while ~open_set.is_empty()
             path = validateFinalState(path, goal_state, cfg);
             path = validateKinematics(path, map, vehicle_config, planner_config);
             path = validateDynamic(path,vehicle_config,planner_config,st_map,higher_priority_trajectories);
-            if path.valid, return; end
-            continue;
+            if path.valid
+                [incumbent,stats] = acceptSolution(path,nodes(previous_id).g_cost, ...
+                    incumbent,stats,timer_id);
+                if ~refinement_enabled
+                    path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'disabled');
+                    return;
+                end
+            end
+            % 缺省保留Day6的continue；细化模式仍扩展当前父节点，
+            % 让同一Open集合有机会从其他接近方向生成新的可行连接。
+            if ~refinement_enabled, continue; end
         end
     end
 
+    if refinement_enabled && incumbent.valid && ...
+            toc(timer_id)>=stats.first_solution_time_s+refinement_time_s
+        path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'refinement_time_limit');
+        return;
+    end
     [children, expand_stats] = vhybrid_expand_node(current, map, ...
         vehicle_config, planner_config, goal_state,st_map,higher_priority_trajectories);
     stats.sampled_controls = stats.sampled_controls + expand_stats.sampled;
@@ -168,6 +222,10 @@ while ~open_set.is_empty()
     stats = mergeDynamicStats(stats,expand_stats,planner_config);
     for k = 1:numel(children)
         if node_count >= cfg.max_search_nodes
+            if incumbent.valid
+                path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'node_limit');
+                return;
+            end
             path.error_code = uint8(5);
             path.search_statistics = finishStats(stats, timer_id);
             path.search_nodes = nodes(1:node_count);
@@ -188,11 +246,43 @@ while ~open_set.is_empty()
     end
 end
 
+if incumbent.valid
+    path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'open_exhausted');
+    return;
+end
 path.error_code = uint8(4);
 if stats.horizon_pruned > 0, path.error_code = uint8(11); end
 path.search_statistics = finishStats(stats, timer_id);
 path.search_nodes = nodes(1:node_count);
 path.failure_diagnostics = failureDiagnostics(path,planner_config);
+end
+
+function [incumbent,stats] = acceptSolution(candidate,cost,incumbent,stats,timer_id)
+%ACCEPTSOLUTION 仅接受已完成相同硬性验收的候选，按完整路径累计g比较。
+if ~incumbent.valid
+    stats.first_solution_time_s = toc(timer_id);
+    stats.first_solution_cost = cost;
+    stats.final_solution_cost = cost;
+    incumbent = candidate;
+elseif cost<stats.final_solution_cost
+    stats.final_solution_cost = cost;
+    stats.solution_improvements = stats.solution_improvements+1;
+    incumbent = candidate;
+end
+end
+
+function path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,reason)
+%FINISHINCUMBENT 搜索上限不使已验收解失效；路径指标对应最终保留的解。
+path = incumbent;
+path_fields = {'path_nodes','path_reverse_distance_m','path_gear_switches', ...
+    'path_gear_wait_time_s','selected_initial_gear'};
+for k=1:numel(path_fields)
+    name = path_fields{k};
+    stats.(name) = incumbent.search_statistics.(name);
+end
+stats.refinement_stop_reason = reason;
+path.search_statistics = finishStats(stats,timer_id);
+path.search_nodes = nodes(1:node_count);
 end
 
 function path = backtrackPath(nodes, goal_id, stats, timer_id, vehicle, planner)
@@ -336,12 +426,18 @@ stats = struct('expanded_nodes',0,'generated_nodes',0,'sampled_controls',0, ...
     'collision_pruned_nodes',0,'constraint_pruned_nodes',0,'closed_pruned_nodes',0, ...
     'goal_connection_candidates',0,'goal_connection_collision_pruned',0, ...
     'goal_connection_geometric_candidates',0,'goal_connection_boundary_pruned',0, ...
+    'goal_connection_turning_pruned',0,'goal_connection_cost_bound_pruned',0, ...
+    'goal_connection_cost_bound_integration_pruned',0, ...
+    'goal_connection_cost_bound_enabled',false, ...
     'open_peak',0,'path_nodes',0,'elapsed_sec',0,'dynamic_pruned',0, ...
     'resource_pruned',0,'braking_midpoint_pruned',0,'faster_controls_skipped',0, ...
     'waiting_nodes',0,'horizon_pruned',0,'reason_counts',struct(),'conflict_examples',{{}}, ...
     'reverse_nodes',0,'gear_switch_nodes',0,'gear_switch_pruned',0, ...
     'path_reverse_distance_m',0,'path_gear_switches',0,'path_gear_wait_time_s',0, ...
-    'initial_gear_mode','fixed','initial_gears',zeros(1,0),'selected_initial_gear',NaN);
+    'initial_gear_mode','fixed','initial_gears',zeros(1,0),'selected_initial_gear',NaN, ...
+    'solution_refinement_time_s',0,'first_solution_time_s',NaN, ...
+    'first_solution_cost',NaN,'final_solution_cost',NaN,'solution_improvements',0, ...
+    'refinement_stop_reason','no_solution');
 end
 
 function stats = finishStats(stats, timer_id)

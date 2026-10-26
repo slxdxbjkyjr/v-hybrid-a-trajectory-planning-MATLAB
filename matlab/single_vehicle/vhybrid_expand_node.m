@@ -21,6 +21,9 @@ function [children, statistics] = vhybrid_expand_node(parent_node, map, ...
 
 cfg = planner_config.vhybrid;
 dynamics = planner_config.dynamics;
+% 本次扩展内地图/尺寸保持不变；入口核对一次，采样内只运行几何内核。
+map = prepare_static_context(map,vehicle_config);
+static_context = map.collision_context;
 if nargin < 6, st_map = []; end
 if nargin < 7, higher_priority_trajectories = []; end
 has_context = ~isempty(st_map) || ~isempty(higher_priority_trajectories);
@@ -99,7 +102,7 @@ for steering_angle = steering_values
                 collision = true; break;
             end
             if has_context, static_states(sample_id+1,:) = sample_state; end
-            if day6_static_collision_check(sample_state(1:3),map,vehicle_config)
+            if day6_static_collision_core(sample_state(1:3),static_context)
                 collision = true;
                 intermediate_collision = sample_id < sample_count;
                 break;
@@ -175,7 +178,7 @@ if reverse_enabled && parent_node.v==0 && ~initial_must_move
     statistics.sampled = statistics.sampled+1;
     current = [parent_node.x,parent_node.y,parent_node.theta,0,parent_node.t];
     next = current; next(5) = current(5)+dynamics.direction_change_time_s;
-    blocked = day6_static_collision_check(current(1:3),map,vehicle_config);
+    blocked = day6_static_collision_core(current(1:3),static_context);
     reason = 'static_collision';
     if ~isempty(st_map) && next(5)>=st_map.t_max
         blocked = true; reason = 'time_horizon_exhausted';

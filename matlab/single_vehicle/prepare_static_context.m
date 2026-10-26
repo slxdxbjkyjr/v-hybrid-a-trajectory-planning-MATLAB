@@ -2,6 +2,16 @@ function map = prepare_static_context(map,vehicle)
 %PREPARE_STATIC_CONTEXT 缓存一次车辆矩形和原始静态几何，避免每个采样点重新校验。
 % 输入：summon_map地图、车辆尺寸/裕度；输出：附加collision_context的地图副本。
 % 矩形道路缓存精确边界；其他凸/凹多边形仍执行原完整几何判定。
+margin = struct('front',0,'rear',0,'side',0);
+if isfield(vehicle,'collision_margin_m'), margin = vehicle.collision_margin_m; end
+% 可重复调用：源尺寸、裕度或任何静态几何改变后必须重新验证并缓存。
+if isfield(map,'collision_context') && ...
+        isequal(map.collision_context.dimensions_m,vehicle.dimensions_m) && ...
+        isequal(map.collision_context.margin,margin) && ...
+        isequal(map.collision_context.source_boundary,map.boundary_xy) && ...
+        isequal(map.collision_context.source_obstacles,map.obstacles)
+    return;
+end
 footprint = inflate_vehicle_occupancy(vehicle,0);
 boundary = vertices(map.boundary_xy);
 edges = boundary([2:end,1],:)-boundary;
@@ -18,8 +28,6 @@ for k = 1:numel(obstacles)
     obstacles{k} = vertices(map.obstacles{k});
     obstacle_bounds(k,:) = [min(obstacles{k},[],1),max(obstacles{k},[],1)];
 end
-margin = struct('front',0,'rear',0,'side',0);
-if isfield(vehicle,'collision_margin_m'), margin = vehicle.collision_margin_m; end
 map.collision_context = struct('dimensions_m',vehicle.dimensions_m,'margin',margin, ...
     'source_boundary',map.boundary_xy,'source_obstacles',{map.obstacles}, ...
     'footprint',footprint,'boundary',boundary,'boundary_is_convex',convex, ...

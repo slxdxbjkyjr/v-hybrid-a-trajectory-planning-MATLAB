@@ -1,0 +1,26 @@
+{
+  "schema_version": "day7.v1",
+  "map_id": "summon_30x30_day7",
+  "coordinate_frame": "local_ground_xy",
+  "units": "m",
+  "source": "day7_prototype_assumption",
+  "boundary": {
+    "type": "parking_lot_boundary",
+    "closed": true,
+    "vertices_xy": [[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0], [0.0, 0.0]],
+    "todo": "30x30 m验证场景边界；后续需以真实召集区域替换。"
+  },
+  "road": {
+    "type": "unstructured_conflict_area_prototype",
+    "centerline_xy": [[0.0, 15.0], [30.0, 15.0]],
+    "todo": "道路中心线仅用于示意，未用作搜索约束。"
+  },
+  "apa_reference_grid": {
+    "xy_resolution_m": 0.5,
+    "yaw_resolution_rad": 0.0872664626,
+    "motion_resolution_m": 0.1,
+    "collision_detect_step_m": 0.5,
+    "source": "APA get_planner_global.m",
+    "applicability": "reference_only; not used as Day7 search constraints"
+  }
+}

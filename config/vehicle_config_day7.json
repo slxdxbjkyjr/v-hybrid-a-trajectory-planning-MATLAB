@@ -1,0 +1,29 @@
+{
+  "schema_version": "day1.v1",
+  "source": "APA PlanningSubFcn/get_planner_global.m",
+  "vehicle_model_id": "F515_APA_Seres_V3p24",
+  "confirmed_from_apa": true,
+  "dimensions_m": {
+    "width": 1.855,
+    "length": 4.763,
+    "wheelbase": 2.78,
+    "rear_axle_to_rear": 1.007,
+    "front_axle_to_front": 0.976,
+    "front_overhang_plus_wheelbase": 3.756
+  },
+  "steering": {
+    "minimum_turning_radius": 5.5,
+    "maximum_steer_rad": 0.4680017179,
+    "maximum_steer_deg": 26.81452324
+  },
+  "collision_margin_m": {
+    "front": 0.2,
+    "rear": 0.2,
+    "side": 0.2
+  },
+  "summon_prototype": {
+    "vehicle_count": 4,
+    "all_vehicles_share_this_geometry": true,
+    "todo": "Day7沿用同一车型几何；车辆数量由scenario_day7_four_vehicle.json定义。"
+  }
+}

@@ -1,0 +1,178 @@
+{
+  "schema_version": "day1.v1",
+  "planner_name": "summon_v_hybrid_a_star_prototype",
+  "stage": "day7_four_vehicle_sequential_planning",
+  "path_search_enabled": true,
+  "trajectory_optimization_enabled": false,
+  "controller_enabled": false,
+  "spatiotemporal_collision_check_enabled": true,
+  "priority_planning_enabled": true,
+  "search": {
+    "xy_grid_resolution_m": 0.5,
+    "yaw_grid_resolution_rad": 0.2617993878,
+    "motion_step_m": 1.0,
+    "collision_check_step_m": 0.25,
+    "steer_sample_count": 9,
+    "direction_set": [
+      -1.0,
+      1.0
+    ],
+    "max_expansions": 20000,
+    "goal_position_tolerance_m": 0.05,
+    "goal_heading_tolerance_rad": 0.0174532925199433,
+    "goal_connection_distance_m": 35.0,
+    "heuristic_weight": 1.0,
+    "reverse_penalty": 1.2,
+    "steer_change_penalty": 0.05,
+    "prototype_assumption": true,
+    "todo": "用实测召集任务的速度、转角、分辨率和终点容差替换。"
+  },
+  "dynamics": {
+    "default_dt_s": 0.1,
+    "v_min_mps": 0.0,
+    "v_max_mps": 5.0,
+    "a_min_mps2": -2.0,
+    "a_max_mps2": 2.0,
+    "delta_max_rad": 0.4680017179,
+    "direction_change_time_s": 0.5,
+    "prototype_assumption": true,
+    "todo": "确认召集阶段实际速度、加速度和转角约束。"
+  },
+  "vhybrid": {
+    "xy_grid_resolution_m": 0.5,
+    "yaw_grid_resolution_rad": 0.2617993878,
+    "velocity_grid_resolution_mps": 0.25,
+    "time_grid_resolution_s": 0.5,
+    "time_step_s": 0.5,
+    "max_search_nodes": 200000,
+    "max_search_time_s": 240.0,
+    "goal_position_tolerance_m": 0.05,
+    "goal_heading_tolerance_rad": 0.017,
+    "weight_distance": 1.0,
+    "weight_speed_change": 0.2,
+    "weight_heading_change": 0.5,
+    "weight_goal_distance": 1.0,
+    "weight_time": 0.5,
+    "reference_speed_mps": 2,
+    "initial_speed_mps": 0.0,
+    "weight_reference_speed": 0.0,
+    "terminal_speed_mps": 0.0,
+    "goal_connection_enabled": true,
+    "goal_connection_distance_m": 35.0,
+    "goal_connection_max_turn_rad": 3.141592653589793,
+    "goal_connection_step_s": 0.25,
+    "collision_check_step_m": 0.1,
+    "path_sample_step_s": 0.1,
+    "goal_speed_tolerance_mps": 1E-06,
+    "kinematic_validation_tolerance": 1E-08,
+    "goal_connection_speed_samples_mps": [
+      0.0,
+      0.5,
+      1.0,
+      1.5,
+      2.0,
+      2.5,
+      3.0,
+      4.0,
+      5.0
+    ],
+    "control_acceleration_samples_mps2": [
+      -2.0,
+      0.0,
+      2.0
+    ],
+    "control_steering_samples_rad": [
+      -0.4680017179,
+      0.0,
+      0.4680017179
+    ],
+    "reverse_enabled": true,
+    "initial_gear": 1,
+    "initial_gear_mode": "auto",
+    "reverse_penalty": 2.0,
+    "gear_switch_penalty": 0.5,
+    "prototype_assumption": true,
+    "todo": "确认 V-Hybrid A* 的时间步长、速度离散分辨率、搜索上限和代价权重。"
+  },
+  "st_occupancy": {
+    "coordinate_convention": "half_open",
+    "x_min": 0.0,
+    "x_max": 30.0,
+    "y_min": 0.0,
+    "y_max": 30.0,
+    "t_min": 0.0,
+    "t_max": 60.0,
+    "dx": 0.5,
+    "dy": 0.5,
+    "dt": 0.5,
+    "safety_distance_m": 0.0,
+    "sweep_max_dt_s": 0.05,
+    "sweep_max_distance_m": 0.1,
+    "trajectory_end_policy": "hold_until_t_max",
+    "max_resource_blocks": 5000000,
+    "max_sweep_samples_per_segment": 100000,
+    "plotting": {
+      "max_3d_points": 30000
+    },
+    "prototype_assumption": true,
+    "todo": "时间范围、分辨率及额外裕度为原型配置；已有车辆0.2m安全裕度仍生效。release仅预留输入轨迹时段；Day6召集点停车应选择hold_until_t_max。"
+  },
+  "day6": {
+    "enabled": true,
+    "require_immediate_start": true,
+    "goal_hold_enabled": true,
+    "collision_sample_step_s": 0.05,
+    "collision_sample_step_m": 0.1,
+    "minimum_safety_distance_m": 0.0,
+    "animation_step_s": 0.2,
+    "animation_frame_rate": 10,
+    "save_animation": true,
+    "max_conflict_examples": 10,
+    "search_heuristic_weight": 3.0,
+    "heuristic_method": "dubins",
+    "prototype_assumption": true,
+    "todo": "车辆已有前后侧0.2m裕度包含在矩形中；检测步长、倒车距离倍率2和换挡代价0.5为可调整原型参数。换挡静止等待由dynamics.direction_change_time_s集中配置为0.5s。"
+  },
+  "day7_vehicle_search_overrides": {
+    "vehicle_003": {
+      "heuristic_method": "euclidean",
+      "goal_connection_selection": "lowest_cost",
+      "goal_connection_cost_pruning_enabled": true,
+      "solution_refinement_time_s": 5.0
+    },
+    "vehicle_004": {
+      "heuristic_weight": 1.0,
+      "reverse_penalty": 0.5,
+      "goal_connection_selection": "lowest_cost",
+      "goal_connection_cost_pruning_enabled": true,
+      "solution_refinement_time_s": 2.0
+    }
+  },
+  "reference_vehicle_model": "vehicle_config.json",
+  "reference_map_model": "map_config.json",
+  "future_state_definition": [
+    "x_m",
+    "y_m",
+    "yaw_rad",
+    "time_s"
+  ],
+  "future_io": {
+    "matlab_input": "scenario struct or JSON-decoded struct",
+    "matlab_output": "trajectory struct reserved; not generated on day1",
+    "cpp_input": "ScenarioConfig / VehicleState / GoalState",
+    "cpp_output": "TrajectoryPlan reserved; not generated on day1"
+  },
+  "apa_reference_parameters": {
+    "n_steer": 20,
+    "motion_step_length_m": 6.0,
+    "heuristic_weight": 5.0,
+    "source": "APA get_planner_global.m",
+    "applicability": "reference_only; search is intentionally disabled"
+  },
+  "todo": [
+    "确定召集阶段时间分辨率 delta_t",
+    "确定速度、加速度和转角采样集合",
+    "确定静态障碍物和车辆间碰撞安全裕度",
+    "确定召集点到达姿态是否有约束"
+  ]
+}
