@@ -45,6 +45,15 @@ if isfield(cfg,'goal_connection_radius_scales')
     end
     radius_scales = unique(double(radius_scales(:).'),'stable');
 end
+% 可选方案C仅由显式配置开启，缺省保持Day6的速度剖面行为。
+multi_phase_enabled = false;
+if isfield(cfg,'goal_connection_multi_phase_profile')
+    multi_phase_enabled = cfg.goal_connection_multi_phase_profile;
+    if ~islogical(multi_phase_enabled) || ~isscalar(multi_phase_enabled)
+        error('VHybrid:InvalidMultiPhaseProfile', ...
+            'goal_connection_multi_phase_profile 必须为逻辑标量。');
+    end
+end
 if nargin < 6, st_map = []; end
 if nargin < 7, higher_priority_trajectories = []; end
 has_context = ~isempty(st_map) || ~isempty(higher_priority_trajectories);
@@ -56,7 +65,10 @@ statistics = struct('candidates', 0, 'collision_pruned', 0, ...
     'conflict_examples',{{}},'geometric_candidates',0,'boundary_geometry_pruned',0, ...
     'turning_geometry_pruned',0, ...
     'cost_bound_enabled',false,'cost_bound_pruned',0, ...
-    'cost_bound_integration_pruned',0);
+    'cost_bound_integration_pruned',0,'multi_phase_candidates',0, ...
+    'multi_phase_collision_pruned',0,'multi_phase_cost_pruned',0, ...
+    'multi_phase_selected',false,'multi_phase_stop_wait_s',NaN, ...
+    'multi_phase_cruise_speed_mps',NaN,'multi_phase_stop_distance_fraction',NaN);
 start = [parent_node.x,parent_node.y,parent_node.theta,parent_node.v,parent_node.t];
 gear = 1;
 if isfield(parent_node,'gear'), gear = parent_node.gear; end
@@ -74,6 +86,9 @@ statistics.cost_bound_enabled = select_lowest_cost && pruning_requested && ...
     nonnegativeConnectionCosts(cfg,gear,parent_node.g_cost);
 if gear < 0 && isfield(cfg,'max_reverse_speed_mps')
     dyn.v_max_mps = min(dyn.v_max_mps,cfg.max_reverse_speed_mps);
+end
+if multi_phase_enabled
+    multi_phase_config = readMultiPhaseConfig(cfg,dyn);
 end
 goal_state = double(goal_state(:).');
 if hypot(start(1)-goal_state(1),start(2)-goal_state(2)) > cfg.goal_connection_distance_m
@@ -204,6 +219,91 @@ for curve_id = 1:numel(curves)
     end
 end
 
+for curve_id = 1:numel(curves)
+    curve = curves(curve_id);
+    if ~multi_phase_enabled, continue; end
+    cumulative_turn=sum(curve.lengths(curve.types~=0))/curve.radius_m;
+    if cumulative_turn>max_connection_turn
+        continue;
+    end
+    [outside,~]=vhybrid_curve_boundary_check(start,curve,curve.radius_m,map,vehicle_config,gear);
+    if outside
+        continue;
+    end
+    multi_candidates = vhybrid_multi_phase_profiles(sum(curve.lengths),start(4), ...
+        cfg.terminal_speed_mps,multi_phase_config.cruise_speeds_mps, ...
+        multi_phase_config.stop_distance_fractions,multi_phase_config.wait_times_s,dyn);
+    statistics.multi_phase_candidates = statistics.multi_phase_candidates+numel(multi_candidates);
+    for multi_id = 1:numel(multi_candidates)
+        candidate = multi_candidates(multi_id);
+        statistics.candidates = statistics.candidates+1;
+        cost_limit = Inf;
+        if statistics.cost_bound_enabled && isfinite(best_connection_cost)
+            cost_limit = best_connection_cost;
+        end
+        actual_delta = delta_max;
+        if curve.radius_m ~= radius
+            actual_delta = atan(vehicle_config.dimensions_m.wheelbase/curve.radius_m);
+        end
+        [trial,reason] = integrateCurve(parent_node,goal_state,curve,candidate.phases, ...
+            actual_delta,map,vehicle_config,planner_config,cost_limit,true);
+        if strcmp(reason,'collision')
+            statistics.collision_pruned=statistics.collision_pruned+1;
+            statistics.multi_phase_collision_pruned=statistics.multi_phase_collision_pruned+1;
+            continue;
+        elseif strcmp(reason,'cost_bound')
+            statistics.cost_bound_pruned=statistics.cost_bound_pruned+1;
+            statistics.cost_bound_integration_pruned=statistics.cost_bound_integration_pruned+1;
+            statistics.multi_phase_cost_pruned=statistics.multi_phase_cost_pruned+1;
+            continue;
+        elseif ~strcmp(reason,'ok')
+            statistics.constraint_pruned=statistics.constraint_pruned+1;
+            continue;
+        end
+        if has_context
+            trajectory=connectionTrajectory(parent_node,trial);
+            [collision,report]=check_trajectory_conflict(trajectory, ...
+                higher_priority_trajectories,vehicle_config,planner_config,st_map, ...
+                struct('collect_distance_samples',false));
+            if ~collision && ~isempty(higher_priority_trajectories) && ...
+                    isfield(planner_config,'day6') && planner_config.day6.goal_hold_enabled
+                hold_trajectory=goalHoldTrajectory(trajectory,st_map,planner_config);
+                [collision,report]=check_trajectory_conflict(hold_trajectory, ...
+                    higher_priority_trajectories,vehicle_config,planner_config,st_map, ...
+                    struct('collect_distance_samples',false));
+            end
+            if collision
+                statistics.collision_pruned=statistics.collision_pruned+1;
+                statistics.multi_phase_collision_pruned=statistics.multi_phase_collision_pruned+1;
+                statistics.dynamic_pruned=statistics.dynamic_pruned+double( ...
+                    report.rectangle_collision || report.physical_collision || ...
+                    (report.resource_conflict && ~strcmp(report.reason,'outside_time_space_bounds')));
+                statistics.resource_pruned=statistics.resource_pruned+double(report.resource_conflict);
+                key=matlab.lang.makeValidName(char(report.reason));
+                if ~isfield(statistics.reason_counts,key), statistics.reason_counts.(key)=0; end
+                statistics.reason_counts.(key)=statistics.reason_counts.(key)+1;
+                if numel(statistics.conflict_examples)<planner_config.day6.max_conflict_examples
+                    statistics.conflict_examples{end+1}=report;
+                end
+                continue;
+            end
+        end
+        if ~select_lowest_cost || trial(end).g_cost<best_connection_cost
+            connection_nodes=trial;
+            statistics.terminal_speed=trial(end).v;
+            statistics.connection_length_m=sum(curve.lengths);
+            best_connection_cost=trial(end).g_cost;
+            statistics.multi_phase_selected=true;
+            statistics.multi_phase_stop_wait_s=candidate.wait_time_s;
+            statistics.multi_phase_cruise_speed_mps=candidate.cruise_speed_mps;
+            statistics.multi_phase_stop_distance_fraction=candidate.stop_distance_fraction;
+            success=true;
+        end
+        if ~select_lowest_cost, return; end
+    end
+end
+
+
 function trajectory = connectionTrajectory(parent,nodes)
 %CONNECTIONTRAJECTORY 将真实模型积分的连接节点转换为统一带控制轨迹。
 trajectory = struct('x',[parent.x;vertcat(nodes.x)], ...
@@ -235,8 +335,9 @@ end
 
 
 function [nodes, reason] = integrateCurve(parent, goal, curve, phases, ...
-    actual_delta, map, vehicle, planner, cost_limit)
+    actual_delta, map, vehicle, planner, cost_limit, allow_stationary_wait)
 %INTEGRATECURVE 以相位/圆弧边界为事件切步，积分同一个自行车模型。
+if nargin<10, allow_stationary_wait=false; end
 cfg = planner.vhybrid; dyn = planner.dynamics;
 static_context = map.collision_context;
 nodes = repmat(vhybrid_node(),0,1); reason = 'constraint';
@@ -259,7 +360,31 @@ while segment <= 3 && phase <= size(phases,1)
         continue;
     end
     % 根据剩余相位时间修正舍入误差；不修改状态，不超过加速度边界。
-    acceleration = (phases(phase,3)-state(4))/time_remaining;
+    target_speed=phases(phase,3);
+    phase_acceleration=phases(phase,2);
+    if allow_stationary_wait && state(4)<=1e-10 && target_speed<=1e-10 && ...
+            abs(phase_acceleration)<=1e-12
+        dt=min(cfg.goal_connection_step_s,time_remaining);
+        next=state; next(5)=state(5)+dt;
+        if day6_static_collision_core(next(1:3),static_context)
+            reason='collision'; return;
+        end
+        [g,h]=vhybrid_cost(previous,next,goal,planner,0,0,gear,false);
+        if isfinite(cost_limit) && isfinite(g) && g>=cost_limit
+            reason='cost_bound'; return;
+        end
+        indices=[floor((next(1)-map.bounds(1))/cfg.xy_grid_resolution_m), ...
+            floor((next(2)-map.bounds(2))/cfg.xy_grid_resolution_m), ...
+            round((mod(next(3)+pi,2*pi))/cfg.yaw_grid_resolution_rad), ...
+            round(next(4)/cfg.velocity_grid_resolution_mps), ...
+            round(next(5)/cfg.time_grid_resolution_s)];
+        node=vhybrid_node(next,0,0,previous.node_id,g,h,indices,0,gear,false);
+        node.direction=0; node.travelled_distance=0;
+        nodes(end+1,1)=node; %#ok<AGROW>
+        previous=node; state=next; time_remaining=time_remaining-dt;
+        continue;
+    end
+    acceleration = (target_speed-state(4))/time_remaining;
     acceleration = max(dyn.a_min_mps2,min(dyn.a_max_mps2,acceleration));
     steering = gear*curve.types(segment)*actual_delta;
     dt = min(cfg.goal_connection_step_s,time_remaining);
@@ -304,6 +429,113 @@ if ~isempty(nodes) && hypot(state(1)-goal(1),state(2)-goal(2)) <= cfg.goal_posit
         abs(state(4)-cfg.terminal_speed_mps) <= cfg.goal_speed_tolerance_mps
     reason = 'ok';
 end
+end
+
+function config = readMultiPhaseConfig(cfg,dyn)
+%READMULTIPHASECONFIG 读取可选的停车等待重加速候选参数。
+required={'goal_connection_multi_phase_cruise_speeds_mps', ...
+    'goal_connection_multi_phase_stop_distance_fractions'};
+for k=1:numel(required)
+    if ~isfield(cfg,required{k}) || ~numericVector(cfg.(required{k}))
+        error('VHybrid:InvalidMultiPhaseProfile','多相位速度和停车比例必须为非空有限实数向量。');
+    end
+end
+config.cruise_speeds_mps = cfg.goal_connection_multi_phase_cruise_speeds_mps(:).';
+config.stop_distance_fractions = cfg.goal_connection_multi_phase_stop_distance_fractions(:).';
+if isfield(cfg,'goal_connection_multi_phase_wait_times_s') && ...
+        ~isempty(cfg.goal_connection_multi_phase_wait_times_s)
+    if ~numericVector(cfg.goal_connection_multi_phase_wait_times_s)
+        error('VHybrid:InvalidMultiPhaseProfile','等待时间必须为有限非负实数向量。');
+    end
+    config.wait_times_s = cfg.goal_connection_multi_phase_wait_times_s(:).';
+else
+    % 等待时间可选：缺省仅生成“减速停车后立即重加速”的剖面。
+    config.wait_times_s = 0;
+end
+values = [config.cruise_speeds_mps,config.stop_distance_fractions,config.wait_times_s];
+if isempty(config.cruise_speeds_mps) || isempty(config.stop_distance_fractions) || ...
+        any(~isfinite(values)) || ...
+        any(config.cruise_speeds_mps<=0) || any(config.cruise_speeds_mps>dyn.v_max_mps) || ...
+        any(config.stop_distance_fractions<=0) || any(config.stop_distance_fractions>=1) || ...
+        any(config.wait_times_s<0) || dyn.v_min_mps>0
+    error('VHybrid:InvalidMultiPhaseProfile','Day7多相位速度剖面参数无效。');
+end
+end
+
+function valid = numericVector(value)
+valid=isnumeric(value) && isreal(value) && isvector(value) && ...
+    ~isempty(value) && all(isfinite(value(:)));
+end
+
+function candidates = vhybrid_multi_phase_profiles(distance,v0,vf, ...
+    cruise_speeds,stop_fractions,wait_times,dyn)
+%VHYBRIDMULTIPHASEPROFILES 生成固定几何上的停车等待重加速剖面。
+candidates = struct('phases',{},'wait_time_s',{}, ...
+    'cruise_speed_mps',{},'stop_distance_fraction',{});
+ap=dyn.a_max_mps2; ab=-dyn.a_min_mps2; vmin=dyn.v_min_mps; vmax=dyn.v_max_mps;
+if isempty(wait_times), wait_times=0; end
+for cruise_speed=cruise_speeds
+    for fraction=stop_fractions
+        stop_distance=fraction*distance;
+        for wait_time=wait_times
+            phases=buildMultiPhaseSegments(distance,v0,vf,cruise_speed, ...
+                stop_distance,wait_time,ap,ab,vmin,vmax);
+            if ~isempty(phases)
+                candidates(end+1,1)=struct('phases',phases, ...
+                    'wait_time_s',wait_time,'cruise_speed_mps',cruise_speed, ...
+                    'stop_distance_fraction',fraction); %#ok<AGROW>
+            end
+        end
+    end
+end
+end
+
+function phases = buildMultiPhaseSegments(distance,v0,vf,cruise_speed, ...
+    stop_distance,wait_time,ap,ab,vmin,vmax)
+%BUILDMULTIPHASESEGMENTS 解析构造速度连续、弧长精确的多相位剖面。
+phases=zeros(0,3);
+if v0<vmin-1e-9 || vf<vmin-1e-9 || cruise_speed<vmin || ...
+        max([v0,vf,cruise_speed])>vmax+1e-9 || cruise_speed<v0-1e-9 || ...
+        vf>cruise_speed+1e-9 || ap<=0 || ab<=0
+    return;
+end
+ramp_up=(cruise_speed^2-v0^2)/(2*ap);
+brake_to_stop=cruise_speed^2/(2*ab);
+ramp_after_stop=cruise_speed^2/(2*ap);
+terminal_brake=(cruise_speed^2-vf^2)/(2*ab);
+if ramp_up+brake_to_stop>stop_distance+1e-9 || ...
+        ramp_after_stop+terminal_brake>distance-stop_distance+1e-9
+    return;
+end
+cruise_before=max(0,stop_distance-ramp_up-brake_to_stop);
+cruise_after=max(0,distance-stop_distance-ramp_after_stop-terminal_brake);
+phases=[(cruise_speed-v0)/ap,ap,cruise_speed; ...
+    cruise_before/cruise_speed,0,cruise_speed; ...
+    cruise_speed/ab,-ab,0];
+if wait_time>0
+    phases=[phases;wait_time,0,0]; %#ok<AGROW>
+end
+phases=[phases;cruise_speed/ap,ap,cruise_speed; ...
+    cruise_after/cruise_speed,0,cruise_speed; ...
+    (cruise_speed-vf)/ab,-ab,vf]; %#ok<AGROW>
+speed=v0; travelled=0;
+for k=1:size(phases,1)
+    duration=phases(k,1); acceleration=phases(k,2); target=phases(k,3);
+    if duration < -1e-10 || ~isfinite(duration)
+        phases=zeros(0,3); return;
+    end
+    next_speed=speed+acceleration*duration;
+    travelled=travelled+0.5*(speed+next_speed)*duration;
+    if abs(next_speed-target)>1e-8*max(1,target)
+        phases=zeros(0,3); return;
+    end
+    speed=next_speed;
+end
+if abs(speed-vf)>1e-8 || abs(travelled-distance)>1e-6*max(1,distance)
+    phases=zeros(0,3);
+end
+% 零时长相位不应生成重复时间节点。
+phases=phases(phases(:,1)>0,:);
 end
 
 function enabled = nonnegativeConnectionCosts(cfg,gear,parent_cost)

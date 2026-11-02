@@ -20,7 +20,7 @@
     "max_expansions": 20000,
     "goal_position_tolerance_m": 0.05,
     "goal_heading_tolerance_rad": 0.0174532925199433,
-    "goal_connection_distance_m": 35.0,
+    "goal_connection_distance_m": 15.0,
     "heuristic_weight": 1.0,
     "reverse_penalty": 1.2,
     "steer_change_penalty": 0.05,
@@ -30,9 +30,9 @@
   "dynamics": {
     "default_dt_s": 0.1,
     "v_min_mps": 0.0,
-    "v_max_mps": 5.0,
-    "a_min_mps2": -2.0,
-    "a_max_mps2": 2.0,
+    "v_max_mps": 10.0,
+    "a_min_mps2": -6.0,
+    "a_max_mps2": 4.0,
     "delta_max_rad": 0.4680017179,
     "direction_change_time_s": 0.5,
     "prototype_assumption": true,
@@ -52,38 +52,40 @@
     "weight_speed_change": 0.2,
     "weight_heading_change": 0.5,
     "weight_goal_distance": 1.0,
-    "weight_time": 0.5,
-    "reference_speed_mps": 2,
+    "weight_time": 1.0,
+    "reference_speed_mps": 4.0,
     "initial_speed_mps": 0.0,
-    "weight_reference_speed": 0.0,
+    "weight_reference_speed": 1,
     "terminal_speed_mps": 0.0,
     "goal_connection_enabled": true,
-    "goal_connection_distance_m": 35.0,
+    "goal_connection_distance_m": 15.0,
     "goal_connection_max_turn_rad": 3.141592653589793,
     "goal_connection_step_s": 0.25,
     "collision_check_step_m": 0.1,
     "path_sample_step_s": 0.1,
-    "goal_speed_tolerance_mps": 1E-06,
-    "kinematic_validation_tolerance": 1E-08,
+    "goal_speed_tolerance_mps": 1e-06,
+    "kinematic_validation_tolerance": 1e-08,
     "goal_connection_speed_samples_mps": [
       0.0,
-      0.5,
       1.0,
-      1.5,
       2.0,
-      2.5,
       3.0,
       4.0,
-      5.0
+      5.0,
+      6.0,
+      8.0,
+      10.0
     ],
     "control_acceleration_samples_mps2": [
-      -2.0,
+      -3.0,
       0.0,
-      2.0
+      3.0
     ],
     "control_steering_samples_rad": [
       -0.4680017179,
+      -0.23400085895,
       0.0,
+      0.23400085895,
       0.4680017179
     ],
     "reverse_enabled": true,
@@ -134,18 +136,22 @@
     "todo": "车辆已有前后侧0.2m裕度包含在矩形中；检测步长、倒车距离倍率2和换挡代价0.5为可调整原型参数。换挡静止等待由dynamics.direction_change_time_s集中配置为0.5s。"
   },
   "day7_vehicle_search_overrides": {
+    "vehicle_002": {
+      "goal_connection_selection": "lowest_cost",
+      "goal_connection_cost_pruning_enabled": true,
+      "solution_refinement_time_s": 0.1
+    },
     "vehicle_003": {
       "heuristic_method": "euclidean",
       "goal_connection_selection": "lowest_cost",
       "goal_connection_cost_pruning_enabled": true,
-      "solution_refinement_time_s": 5.0
+      "solution_refinement_time_s": 0.1
     },
     "vehicle_004": {
       "heuristic_weight": 1.0,
-      "reverse_penalty": 0.5,
       "goal_connection_selection": "lowest_cost",
       "goal_connection_cost_pruning_enabled": true,
-      "solution_refinement_time_s": 2.0
+      "solution_refinement_time_s": 0.1
     }
   },
   "reference_vehicle_model": "vehicle_config.json",

@@ -24,16 +24,16 @@
     {
       "id": "vehicle_003",
       "vehicle_type": "F515_APA_Seres_V3p24",
-      "priority": 3,
+      "priority": 4,
       "start_pose": {"x_m": 27.0, "y_m": 25.0, "yaw_rad": 3.14},
       "summon_goal": {"id": "summon_point_003", "x_m": 6.0, "y_m": 4.0, "yaw_rad": 3.14}
     },
     {
       "id": "vehicle_004",
       "vehicle_type": "F515_APA_Seres_V3p24",
-      "priority": 4,
+      "priority": 3,
       "start_pose": {"x_m": 23.0, "y_m": 20.0, "yaw_rad": -1.57},
-      "summon_goal": {"id": "summon_point_004", "x_m": 28.0, "y_m": 8.0, "yaw_rad": -1.57}
+      "summon_goal": {"id": "summon_point_004", "x_m": 6.0, "y_m": 10.0, "yaw_rad": -3.14}
     }
   ],
   "static_obstacles": [],
