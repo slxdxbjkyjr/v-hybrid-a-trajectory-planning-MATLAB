@@ -1,6 +1,6 @@
 function [next_state, travelled_distance, curvature, valid_flag] = ...
     summon_vehicle_dynamic(current_state, delta, acceleration, dt, wheelbase, ...
-    v_max, v_min, a_min, a_max, delta_max)
+    v_max, v_min, a_min, a_max, delta_max, dynamics)
 %SUMMON_VEHICLE_DYNAMIC 带速度和时间的运动学自行车模型。
 %
 % 输入：
@@ -12,6 +12,7 @@ function [next_state, travelled_distance, curvature, valid_flag] = ...
 %   v_max/v_min   - 速度上限/下限，单位 m/s。
 %   a_min/a_max   - 加速度下限/上限，单位 m/s^2。
 %   delta_max     - 最大允许前轮转角绝对值，单位 rad。
+%   dynamics      - 可选集中动力学配置；旧10参数接口不启用横向约束。
 %
 % 输出：
 %   next_state        - 下一状态 [x,y,theta,v_next,t_next]。
@@ -25,6 +26,9 @@ function [next_state, travelled_distance, curvature, valid_flag] = ...
 %   然后按曲率对车辆位姿积分，最后设置 t_next=t+dt。
 %   任何约束违反均返回 valid_flag=false，并保持当前状态不变。
 
+if nargin < 11, dynamics = struct(); end
+% 配置错误不能被无效状态/动作的提前返回静默掩盖。
+lateral_cfg = validate_lateral_acceleration_config(dynamics);
 next_state = double(current_state(:).');
 travelled_distance = 0.0;
 curvature = 0.0;
@@ -58,6 +62,11 @@ if v_next < v_min-speed_roundoff || v_next > v_max+speed_roundoff
 end
 if abs(v_next-v_min) <= speed_roundoff, v_next = v_min; end
 if abs(v_next-v_max) <= speed_roundoff, v_next = v_max; end
+
+if lateral_cfg.enabled
+    lateral_valid = summon_lateral_acceleration(v,v_next,delta,wheelbase,dynamics);
+    if ~lateral_valid, return; end
+end
 
 travelled_distance = 0.5 * (v + v_next) * dt;
 curvature = tan(delta) / wheelbase;

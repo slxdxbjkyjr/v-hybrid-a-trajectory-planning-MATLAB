@@ -6,25 +6,60 @@ function report = vhybrid_validate_trajectory(path, map, vehicle, planner)
 % 第 k 个控制量用于 k-1 到 k；角差按 [-pi,pi) 处理，避免 ±pi 伪跳变。
 % 倒车边由独立档位适配器重放；换挡前后须停稳、车身不动且等待 >= 配置值。
 % 连续静止边累计等待时间，兼容换挡等待段被输出采样细分的轨迹。
+% 启用横向约束时独立计算每段入口/出口峰值；重放残差不混入横向拒绝。
 report = struct('valid',false,'max_position_residual_m',0, ...
     'max_heading_residual_rad',0,'max_speed_residual_mps',0, ...
     'max_heading_step_rad',0,'collision_count',0,'constraint_failures',0, ...
     'gear_change_count',0,'gear_change_failures',0,'minimum_gear_change_wait_s',NaN);
+report.failure_reasons = {};
+report.lateral_acceleration = vhybrid_validate_lateral_acceleration(path,vehicle,planner);
+if report.lateral_acceleration.enabled
+    report.constraint_failures = report.lateral_acceleration.violation_count+ ...
+        report.lateral_acceleration.invalid_segment_count;
+    % 段输入本身非法时不能继续索引重放；配置错误已在独立验收器明确报错。
+    report.failure_reasons = report.lateral_acceleration.failure_reasons;
+    if report.lateral_acceleration.invalid_segment_count > 0, return; end
+    % 横向验收已检查这些字段均为等长实数向量。仅新模式统一为double，
+    % 避免整型时间/状态在重放算术中截断；旧模式保持原输入处理行为。
+    fields = {'x','y','theta','v','t','acceleration','steering_angle'};
+    for f = 1:numel(fields)
+        value = path.(fields{f});
+        path.(fields{f}) = double(value(:));
+    end
+    if isfield(path,'gear'), path.gear = double(path.gear(:)); end
+end
 if numel(path.x) < 2, return; end
 dyn = planner.dynamics;
+replay_planner = planner;
+if report.lateral_acceleration.enabled
+    replay_planner.dynamics.lateral_acceleration_constraint_enabled = false;
+end
 tol = planner.vhybrid.kinematic_validation_tolerance;
 gears = ones(numel(path.x),1);
 if isfield(path,'gear'), gears = path.gear(:); end
 if numel(gears) ~= numel(path.x) || any(~ismember(gears,[-1,1]))
-    report.constraint_failures = 1;
+    report.constraint_failures = report.constraint_failures+1;
     report.gear_change_failures = 1;
+    report.failure_reasons{end+1} = 'invalid_gear';
     return;
 end
 shift_flags = false(numel(path.x),1);
+if report.lateral_acceleration.enabled && isfield(path,'is_gear_change')
+    flags = path.is_gear_change;
+    if ~(isnumeric(flags) || islogical(flags)) || ~isreal(flags) || ...
+            ~isvector(flags) || numel(flags) ~= numel(path.x) || ...
+            any(~ismember(flags(:),[0,1]))
+        report.constraint_failures = report.constraint_failures+1;
+        report.gear_change_failures = 1;
+        report.failure_reasons{end+1} = 'invalid_gear_change_flags';
+        return;
+    end
+end
 if isfield(path,'is_gear_change'), shift_flags = logical(path.is_gear_change(:)); end
 if numel(shift_flags) ~= numel(path.x)
-    report.constraint_failures = 1;
+    report.constraint_failures = report.constraint_failures+1;
     report.gear_change_failures = 1;
+    report.failure_reasons{end+1} = 'invalid_gear_change_flag_shape';
     return;
 end
 stationary_wait_s = 0;
@@ -58,7 +93,7 @@ for k = 2:numel(path.x)
         stationary_wait_s = 0;
     end
     [expected,~,~,valid] = summon_vehicle_dynamic_gear( ...
-        start,path.steering_angle(k),path.acceleration(k),dt,vehicle,planner,gears(k));
+        start,path.steering_angle(k),path.acceleration(k),dt,vehicle,replay_planner,gears(k));
     report.constraint_failures = report.constraint_failures+double(~valid);
     report.max_position_residual_m = max(report.max_position_residual_m, ...
         hypot(expected(1)-path.x(k),expected(2)-path.y(k)));

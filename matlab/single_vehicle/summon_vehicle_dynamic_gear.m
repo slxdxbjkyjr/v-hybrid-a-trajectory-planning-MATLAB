@@ -13,6 +13,8 @@ function [next_state, travelled_distance, curvature, valid_flag] = ...
 %       theta_dot=gear*v*tan(delta)/L，不把倒车伪装成车身翻转 pi。
 %       本函数只积分固定档位，停稳后换挡和等待时间由搜索与验收接口检查。
 if nargin < 7, gear = 1; end
+% 始终先验证启用配置，再处理动作有效性；缺少开关保持旧行为。
+validate_lateral_acceleration_config(planner.dynamics);
 next_state = double(current_state(:).');
 travelled_distance = 0;
 curvature = 0;
@@ -54,7 +56,7 @@ end
 [next_state,travelled_distance,curvature,valid_flag] = summon_vehicle_dynamic( ...
     signed_state,delta,gear*acceleration,dt,vehicle.dimensions_m.wheelbase, ...
     v_max,v_min,a_min,a_max, ...
-    min(vehicle.steering.maximum_steer_rad,dyn.delta_max_rad));
+    min(vehicle.steering.maximum_steer_rad,dyn.delta_max_rad),dyn);
 if valid_flag
     next_state(4) = abs(next_state(4));
 else
