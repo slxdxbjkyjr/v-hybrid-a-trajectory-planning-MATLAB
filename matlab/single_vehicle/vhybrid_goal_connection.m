@@ -61,6 +61,7 @@ success = false;
 connection_nodes = repmat(vhybrid_node(), 0, 1);
 statistics = struct('candidates', 0, 'collision_pruned', 0, ...
     'constraint_pruned', 0, 'terminal_speed', NaN, 'connection_length_m', NaN, ...
+    'lateral_acceleration_pruned',0, ...
     'dynamic_pruned',0,'resource_pruned',0,'reason_counts',struct(), ...
     'conflict_examples',{{}},'geometric_candidates',0,'boundary_geometry_pruned',0, ...
     'turning_geometry_pruned',0, ...
@@ -175,6 +176,12 @@ for curve_id = 1:numel(curves)
             statistics.cost_bound_pruned = statistics.cost_bound_pruned+1;
             statistics.cost_bound_integration_pruned = statistics.cost_bound_integration_pruned+1;
             continue;
+        elseif isLateralLimitReason(reason)
+            statistics.constraint_pruned = statistics.constraint_pruned+1;
+            statistics.lateral_acceleration_pruned = ...
+                statistics.lateral_acceleration_pruned+1;
+            statistics = countReason(statistics,reason);
+            continue;
         elseif ~strcmp(reason,'ok')
             statistics.constraint_pruned = statistics.constraint_pruned + 1;
             continue;
@@ -256,6 +263,12 @@ for curve_id = 1:numel(curves)
             statistics.cost_bound_integration_pruned=statistics.cost_bound_integration_pruned+1;
             statistics.multi_phase_cost_pruned=statistics.multi_phase_cost_pruned+1;
             continue;
+        elseif isLateralLimitReason(reason)
+            statistics.constraint_pruned=statistics.constraint_pruned+1;
+            statistics.lateral_acceleration_pruned= ...
+                statistics.lateral_acceleration_pruned+1;
+            statistics=countReason(statistics,reason);
+            continue;
         elseif ~strcmp(reason,'ok')
             statistics.constraint_pruned=statistics.constraint_pruned+1;
             continue;
@@ -303,7 +316,6 @@ for curve_id = 1:numel(curves)
     end
 end
 
-
 function trajectory = connectionTrajectory(parent,nodes)
 %CONNECTIONTRAJECTORY 将真实模型积分的连接节点转换为统一带控制轨迹。
 trajectory = struct('x',[parent.x;vertcat(nodes.x)], ...
@@ -331,6 +343,19 @@ if last_time > path.t(end)
     trajectory.gear(2,1) = path.gear(end); trajectory.is_gear_change(2,1) = false;
 end
 end
+end
+
+function flag = isLateralLimitReason(reason)
+%ISLATERALLIMITREASON 只分类由横向加速度限值触发的运动学拒绝。
+flag = any(strcmp(reason,{'entry_lateral_acceleration_exceeded', ...
+    'segment_lateral_acceleration_exceeded'}));
+end
+
+function statistics = countReason(statistics,reason)
+%COUNTREASON 汇总独立拒绝原因。
+key = matlab.lang.makeValidName(char(reason));
+if ~isfield(statistics.reason_counts,key), statistics.reason_counts.(key) = 0; end
+statistics.reason_counts.(key) = statistics.reason_counts.(key)+1;
 end
 
 
@@ -399,9 +424,16 @@ while segment <= 3 && phase <= size(phases,1)
         end_speed = sqrt(max(0,state(4)^2+2*acceleration*ds_limit));
         dt = min(dt,2*ds_limit/(state(4)+end_speed));
     end
-    [next,ds,~,valid] = summon_vehicle_dynamic_gear(state,steering,acceleration,dt, ...
-        vehicle,planner,gear);
-    if ~valid || abs(ds) <= 0 || next(5) <= state(5)
+    [next,ds,~,valid,lateral_detail] = summon_vehicle_dynamic_gear( ...
+        state,steering,acceleration,dt,vehicle,planner,gear);
+    if ~valid
+        if isfield(lateral_detail,'enabled') && lateral_detail.enabled && ...
+                isLateralLimitReason(lateral_detail.reason)
+            reason = lateral_detail.reason;
+        end
+        return;
+    end
+    if abs(ds) <= 0 || next(5) <= state(5)
         return;
     end
     if day6_static_collision_core(next(1:3),static_context)

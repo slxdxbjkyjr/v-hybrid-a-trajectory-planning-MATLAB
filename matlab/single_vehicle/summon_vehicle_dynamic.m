@@ -1,4 +1,4 @@
-function [next_state, travelled_distance, curvature, valid_flag] = ...
+function [next_state, travelled_distance, curvature, valid_flag, lateral_detail] = ...
     summon_vehicle_dynamic(current_state, delta, acceleration, dt, wheelbase, ...
     v_max, v_min, a_min, a_max, delta_max, dynamics)
 %SUMMON_VEHICLE_DYNAMIC 带速度和时间的运动学自行车模型。
@@ -19,6 +19,7 @@ function [next_state, travelled_distance, curvature, valid_flag] = ...
 %   travelled_distance- 本时间步行驶距离，单位 m。
 %   curvature         - 曲率 tan(delta)/L，单位 1/m。
 %   valid_flag        - 所有输入和运动约束均满足时为 true。
+%   lateral_detail    - 可选第五输出，横向约束启用状态、峰值和拒绝原因。
 %
 % 状态变量和算法逻辑：
 %   该函数是原 APA VehicleDynamic.m 的独立扩展，不修改原函数。
@@ -33,6 +34,7 @@ next_state = double(current_state(:).');
 travelled_distance = 0.0;
 curvature = 0.0;
 valid_flag = false;
+lateral_detail = struct('enabled',lateral_cfg.enabled,'reason','not_evaluated');
 
 if numel(current_state) ~= 5 || any(~isfinite(double(current_state)))
     return;
@@ -64,7 +66,8 @@ if abs(v_next-v_min) <= speed_roundoff, v_next = v_min; end
 if abs(v_next-v_max) <= speed_roundoff, v_next = v_max; end
 
 if lateral_cfg.enabled
-    lateral_valid = summon_lateral_acceleration(v,v_next,delta,wheelbase,dynamics);
+    [lateral_valid,lateral_detail] = summon_lateral_acceleration( ...
+        v,v_next,delta,wheelbase,dynamics);
     if ~lateral_valid, return; end
 end
 

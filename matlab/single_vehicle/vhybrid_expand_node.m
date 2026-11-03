@@ -44,6 +44,7 @@ end
 children = repmat(vhybrid_node(), 0, 1);
 statistics = struct('sampled', 0, 'valid', 0, 'collision_pruned', 0, ...
     'constraint_pruned', 0, 'dynamic_pruned',0,'resource_pruned',0, ...
+    'lateral_acceleration_pruned',0, ...
     'braking_midpoint_pruned',0,'faster_controls_skipped',0,'waiting_nodes',0,'horizon_pruned',0, ...
     'reason_counts',struct(),'conflict_examples',{{}}, ...
     'reverse_nodes',0,'gear_switch_nodes',0,'gear_switch_pruned',0);
@@ -64,12 +65,18 @@ for steering_angle = steering_values
             statistics = countReason(statistics,'initial_motion_required');
             continue;
         end
-        [next_state, distance, ~, valid] = summon_vehicle_dynamic_gear( ...
+        [next_state, distance, ~, valid, lateral_detail] = summon_vehicle_dynamic_gear( ...
             current_state,steering_angle,acceleration,cfg.time_step_s, ...
             vehicle_config,planner_config,gear);
         if ~valid
             statistics.constraint_pruned = statistics.constraint_pruned + 1;
-            statistics = countReason(statistics,'kinematic_constraint');
+            if isLateralLimitViolation(lateral_detail)
+                statistics.lateral_acceleration_pruned = ...
+                    statistics.lateral_acceleration_pruned+1;
+                statistics = countReason(statistics,lateral_detail.reason);
+            else
+                statistics = countReason(statistics,'kinematic_constraint');
+            end
             continue;
         end
         if has_context && ~isempty(st_map) && next_state(5) >= st_map.t_max
@@ -218,6 +225,14 @@ function statistics = countReason(statistics,reason)
 key = matlab.lang.makeValidName(char(reason));
 if ~isfield(statistics.reason_counts,key), statistics.reason_counts.(key) = 0; end
 statistics.reason_counts.(key) = statistics.reason_counts.(key)+1;
+end
+
+function flag = isLateralLimitViolation(detail)
+%ISLATERALLIMITVIOLATION 区分横向硬约束拒绝与其他运动学失败。
+flag = isstruct(detail) && isscalar(detail) && isfield(detail,'enabled') && ...
+    isequal(detail.enabled,true) && isfield(detail,'reason') && ...
+    any(strcmp(detail.reason,{'entry_lateral_acceleration_exceeded', ...
+    'segment_lateral_acceleration_exceeded'}));
 end
 end
 

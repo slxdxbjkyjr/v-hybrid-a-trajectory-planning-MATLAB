@@ -151,7 +151,8 @@ while ~open_set.is_empty()
         path = validateKinematics(path, map, vehicle_config, planner_config);
         path = validateDynamic(path,vehicle_config,planner_config,st_map,higher_priority_trajectories);
         if path.valid
-            [incumbent,stats] = acceptSolution(path,current.g_cost,incumbent,stats,timer_id);
+            [incumbent,stats] = acceptSolution(path,current.g_cost,incumbent,stats, ...
+                timer_id,vehicle_config);
             if ~refinement_enabled
                 path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'disabled');
                 return;
@@ -163,6 +164,11 @@ while ~open_set.is_empty()
     if isfield(cfg, 'goal_connection_enabled') && cfg.goal_connection_enabled
         [connected, connection_nodes, connection_stats] = vhybrid_goal_connection( ...
             current, goal_state, map, vehicle_config, planner_config,st_map,higher_priority_trajectories);
+        stats.goal_connection_lateral_acceleration_pruned = ...
+            stats.goal_connection_lateral_acceleration_pruned + ...
+            connection_stats.lateral_acceleration_pruned;
+        stats.lateral_acceleration_pruned = stats.lateral_acceleration_pruned + ...
+            connection_stats.lateral_acceleration_pruned;
         stats.goal_connection_candidates = stats.goal_connection_candidates + connection_stats.candidates;
         stats.goal_connection_collision_pruned = stats.goal_connection_collision_pruned + connection_stats.collision_pruned;
         stats.goal_connection_geometric_candidates = stats.goal_connection_geometric_candidates + ...
@@ -207,7 +213,7 @@ while ~open_set.is_empty()
             path = validateDynamic(path,vehicle_config,planner_config,st_map,higher_priority_trajectories);
             if path.valid
                 [incumbent,stats] = acceptSolution(path,nodes(previous_id).g_cost, ...
-                    incumbent,stats,timer_id);
+                    incumbent,stats,timer_id,vehicle_config);
                 if ~refinement_enabled
                     path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,'disabled');
                     return;
@@ -230,6 +236,10 @@ while ~open_set.is_empty()
     stats.generated_nodes = stats.generated_nodes + expand_stats.valid;
     stats.collision_pruned_nodes = stats.collision_pruned_nodes + expand_stats.collision_pruned;
     stats.constraint_pruned_nodes = stats.constraint_pruned_nodes + expand_stats.constraint_pruned;
+    stats.lateral_acceleration_pruned_nodes = ...
+        stats.lateral_acceleration_pruned_nodes+expand_stats.lateral_acceleration_pruned;
+    stats.lateral_acceleration_pruned = ...
+        stats.lateral_acceleration_pruned+expand_stats.lateral_acceleration_pruned;
     stats = mergeDynamicStats(stats,expand_stats,planner_config);
     for k = 1:numel(children)
         if node_count >= cfg.max_search_nodes
@@ -268,14 +278,22 @@ path.search_nodes = nodes(1:node_count);
 path.failure_diagnostics = failureDiagnostics(path,planner_config);
 end
 
-function [incumbent,stats] = acceptSolution(candidate,cost,incumbent,stats,timer_id)
+function [incumbent,stats] = acceptSolution(candidate,cost,incumbent,stats,timer_id,vehicle)
 %ACCEPTSOLUTION 仅接受已完成相同硬性验收的候选，按完整路径累计g比较。
 if ~incumbent.valid
+    stats.max_path_lateral_acceleration_mps2 = ...
+        pathLateralAccelerationPeak(candidate,vehicle.dimensions_m.wheelbase);
+    candidate.search_statistics.max_path_lateral_acceleration_mps2 = ...
+        stats.max_path_lateral_acceleration_mps2;
     stats.first_solution_time_s = toc(timer_id);
     stats.first_solution_cost = cost;
     stats.final_solution_cost = cost;
     incumbent = candidate;
 elseif cost<stats.final_solution_cost
+    stats.max_path_lateral_acceleration_mps2 = ...
+        pathLateralAccelerationPeak(candidate,vehicle.dimensions_m.wheelbase);
+    candidate.search_statistics.max_path_lateral_acceleration_mps2 = ...
+        stats.max_path_lateral_acceleration_mps2;
     stats.final_solution_cost = cost;
     stats.solution_improvements = stats.solution_improvements+1;
     incumbent = candidate;
@@ -286,7 +304,8 @@ function path = finishIncumbent(incumbent,stats,nodes,node_count,timer_id,reason
 %FINISHINCUMBENT 搜索上限不使已验收解失效；路径指标对应最终保留的解。
 path = incumbent;
 path_fields = {'path_nodes','path_reverse_distance_m','path_gear_switches', ...
-    'path_gear_wait_time_s','selected_initial_gear'};
+    'path_gear_wait_time_s','selected_initial_gear', ...
+    'max_path_lateral_acceleration_mps2'};
 for k=1:numel(path_fields)
     name = path_fields{k};
     stats.(name) = incumbent.search_statistics.(name);
@@ -294,6 +313,24 @@ end
 stats.refinement_stop_reason = reason;
 path.search_statistics = finishStats(stats,timer_id);
 path.search_nodes = nodes(1:node_count);
+end
+
+function peak = pathLateralAccelerationPeak(path,wheelbase)
+%PATHLATERALACCELERATIONPEAK 汇总最终路径每个恒转角运动段峰值。
+peak = NaN;
+if isempty(path.x) || isempty(path.v) || isempty(path.steering_angle) || ...
+        ~isfinite(wheelbase) || wheelbase<=0
+    return;
+end
+if numel(path.x)<2
+    peak = 0;
+    return;
+end
+entry_speed = abs(path.v(1:end-1));
+exit_speed = abs(path.v(2:end));
+curvature = abs(tan(path.steering_angle(2:end))/wheelbase);
+segment_peaks = max(entry_speed,exit_speed).^2.*curvature;
+if all(isfinite(segment_peaks)), peak = max(segment_peaks); end
 end
 
 function path = backtrackPath(nodes, goal_id, stats, timer_id, vehicle, planner)
@@ -435,6 +472,9 @@ function stats = initStats()
 %INITSTATS 初始化 V-Hybrid A* 搜索统计。
 stats = struct('expanded_nodes',0,'generated_nodes',0,'sampled_controls',0, ...
     'collision_pruned_nodes',0,'constraint_pruned_nodes',0,'closed_pruned_nodes',0, ...
+    'lateral_acceleration_pruned',0,'lateral_acceleration_pruned_nodes',0, ...
+    'goal_connection_lateral_acceleration_pruned',0, ...
+    'max_path_lateral_acceleration_mps2',NaN, ...
     'goal_connection_candidates',0,'goal_connection_collision_pruned',0, ...
     'goal_connection_geometric_candidates',0,'goal_connection_boundary_pruned',0, ...
     'goal_connection_turning_pruned',0,'goal_connection_cost_bound_pruned',0, ...
