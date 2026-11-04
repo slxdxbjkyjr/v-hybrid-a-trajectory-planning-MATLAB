@@ -9,6 +9,7 @@ function [success, connection_nodes, statistics] = vhybrid_goal_connection( ...
 
 cfg = planner_config.vhybrid;
 dyn = planner_config.dynamics;
+lateral_cfg = validate_lateral_acceleration_config(dyn);
 % 缺省仍接受首条可行连接；Day7可按同一父节点的完整累计代价择优。
 selection_mode = 'first_feasible';
 if isfield(cfg,'goal_connection_selection')
@@ -64,6 +65,7 @@ statistics = struct('candidates', 0, 'collision_pruned', 0, ...
     'lateral_acceleration_pruned',0, ...
     'dynamic_pruned',0,'resource_pruned',0,'reason_counts',struct(), ...
     'conflict_examples',{{}},'geometric_candidates',0,'boundary_geometry_pruned',0, ...
+    'speed_profile_diagnostics',emptySpeedProfileDiagnostics(lateral_cfg.enabled), ...
     'turning_geometry_pruned',0, ...
     'cost_bound_enabled',false,'cost_bound_pruned',0, ...
     'cost_bound_integration_pruned',0,'multi_phase_candidates',0, ...
@@ -152,10 +154,28 @@ for curve_id = 1:numel(curves)
     end
     for cruise_speed = speeds
         statistics.candidates = statistics.candidates + 1;
-        [phases, feasible] = vhybrid_speed_phases(sum(curve.lengths),start(4), ...
-            cfg.terminal_speed_mps,cruise_speed,dyn);
+        if lateral_cfg.enabled
+            segment_curvatures = abs(curve.types)/curve.radius_m;
+            [phases,feasible,profile_diagnostic] = vhybrid_segmented_speed_phases( ...
+                curve.lengths,segment_curvatures,start(4),cfg.terminal_speed_mps, ...
+                cruise_speed,dyn,lateral_cfg.max_lateral_acceleration_mps2, ...
+                lateral_cfg.lateral_acceleration_tolerance_mps2);
+            profile_diagnostic.candidate_kind = 'ordinary';
+            statistics.speed_profile_diagnostics = recordSpeedProfile( ...
+                statistics.speed_profile_diagnostics,profile_diagnostic);
+        else
+            [phases, feasible] = vhybrid_speed_phases(sum(curve.lengths),start(4), ...
+                cfg.terminal_speed_mps,cruise_speed,dyn);
+            profile_diagnostic = struct();
+        end
         if ~feasible
             statistics.constraint_pruned = statistics.constraint_pruned + 1;
+            if lateral_cfg.enabled && ...
+                    profile_diagnostic.lateral_constraint_caused_infeasibility
+                statistics.lateral_acceleration_pruned = ...
+                    statistics.lateral_acceleration_pruned+1;
+                statistics = countReason(statistics,profile_diagnostic.reason);
+            end
             continue;
         end
         cost_limit = Inf;
@@ -220,6 +240,9 @@ for curve_id = 1:numel(curves)
             statistics.terminal_speed = trial(end).v;
             statistics.connection_length_m = sum(curve.lengths);
             best_connection_cost = trial(end).g_cost;
+            if lateral_cfg.enabled
+                statistics.speed_profile_diagnostics.selected = profile_diagnostic;
+            end
             success = true;
         end
         if ~select_lowest_cost, return; end
@@ -237,9 +260,25 @@ for curve_id = 1:numel(curves)
     if outside
         continue;
     end
-    multi_candidates = vhybrid_multi_phase_profiles(sum(curve.lengths),start(4), ...
+    [multi_candidates,multi_profile_attempts] = vhybrid_multi_phase_profiles(sum(curve.lengths),start(4), ...
         cfg.terminal_speed_mps,multi_phase_config.cruise_speeds_mps, ...
-        multi_phase_config.stop_distance_fractions,multi_phase_config.wait_times_s,dyn);
+        multi_phase_config.stop_distance_fractions,multi_phase_config.wait_times_s,dyn, ...
+        curve.lengths,abs(curve.types)/curve.radius_m,lateral_cfg.enabled, ...
+        lateral_cfg.max_lateral_acceleration_mps2, ...
+        lateral_cfg.lateral_acceleration_tolerance_mps2);
+    for profile_id = 1:numel(multi_profile_attempts)
+        profile_attempt = multi_profile_attempts{profile_id};
+        statistics.speed_profile_diagnostics = recordSpeedProfile( ...
+            statistics.speed_profile_diagnostics,profile_attempt);
+        if ~profile_attempt.feasible
+            statistics.constraint_pruned = statistics.constraint_pruned+1;
+            if profile_attempt.lateral_constraint_caused_infeasibility
+                statistics.lateral_acceleration_pruned = ...
+                    statistics.lateral_acceleration_pruned+1;
+                statistics = countReason(statistics,profile_attempt.reason);
+            end
+        end
+    end
     statistics.multi_phase_candidates = statistics.multi_phase_candidates+numel(multi_candidates);
     for multi_id = 1:numel(multi_candidates)
         candidate = multi_candidates(multi_id);
@@ -306,6 +345,9 @@ for curve_id = 1:numel(curves)
             statistics.terminal_speed=trial(end).v;
             statistics.connection_length_m=sum(curve.lengths);
             best_connection_cost=trial(end).g_cost;
+            if lateral_cfg.enabled
+                statistics.speed_profile_diagnostics.selected = candidate.profile_diagnostics;
+            end
             statistics.multi_phase_selected=true;
             statistics.multi_phase_stop_wait_s=candidate.wait_time_s;
             statistics.multi_phase_cruise_speed_mps=candidate.cruise_speed_mps;
@@ -349,6 +391,28 @@ function flag = isLateralLimitReason(reason)
 %ISLATERALLIMITREASON 只分类由横向加速度限值触发的运动学拒绝。
 flag = any(strcmp(reason,{'entry_lateral_acceleration_exceeded', ...
     'segment_lateral_acceleration_exceeded'}));
+end
+
+function diagnostic = emptySpeedProfileDiagnostics(enabled)
+%EMPTYSPEEDPROFILEDIAGNOSTICS 初始化局部限速与可达性统计。
+diagnostic = struct('enabled',enabled,'attempt_count',0,'feasible_count',0, ...
+    'unreachable_count',0,'reason_counts',struct(),'last_attempt',struct(), ...
+    'last_unreachable',struct(),'selected',struct());
+end
+
+function summary = recordSpeedProfile(summary,diagnostic)
+%RECORDSPEEDPROFILE 汇总剖面可达性并保留最近失败诊断。
+summary.attempt_count = summary.attempt_count+1;
+summary.last_attempt = diagnostic;
+if diagnostic.feasible
+    summary.feasible_count = summary.feasible_count+1;
+    return;
+end
+summary.unreachable_count = summary.unreachable_count+1;
+summary.last_unreachable = diagnostic;
+key = matlab.lang.makeValidName(char(diagnostic.reason));
+if ~isfield(summary.reason_counts,key), summary.reason_counts.(key) = 0; end
+summary.reason_counts.(key) = summary.reason_counts.(key)+1;
 end
 
 function statistics = countReason(statistics,reason)
@@ -499,23 +563,41 @@ valid=isnumeric(value) && isreal(value) && isvector(value) && ...
     ~isempty(value) && all(isfinite(value(:)));
 end
 
-function candidates = vhybrid_multi_phase_profiles(distance,v0,vf, ...
-    cruise_speeds,stop_fractions,wait_times,dyn)
+function [candidates,profile_attempts] = vhybrid_multi_phase_profiles(distance,v0,vf, ...
+    cruise_speeds,stop_fractions,wait_times,dyn,segment_lengths, ...
+    segment_curvatures,lateral_enabled,max_lateral_acceleration,tolerance)
 %VHYBRIDMULTIPHASEPROFILES 生成固定几何上的停车等待重加速剖面。
 candidates = struct('phases',{},'wait_time_s',{}, ...
-    'cruise_speed_mps',{},'stop_distance_fraction',{});
+    'cruise_speed_mps',{},'stop_distance_fraction',{},'profile_diagnostics',{});
+profile_attempts = {};
 ap=dyn.a_max_mps2; ab=-dyn.a_min_mps2; vmin=dyn.v_min_mps; vmax=dyn.v_max_mps;
 if isempty(wait_times), wait_times=0; end
+if nargin<8, segment_lengths=zeros(1,0); end
+if nargin<9, segment_curvatures=zeros(1,0); end
+if nargin<10, lateral_enabled=false; end
+if nargin<11, max_lateral_acceleration=NaN; end
+if nargin<12, tolerance=0; end
 for cruise_speed=cruise_speeds
     for fraction=stop_fractions
         stop_distance=fraction*distance;
         for wait_time=wait_times
-            phases=buildMultiPhaseSegments(distance,v0,vf,cruise_speed, ...
-                stop_distance,wait_time,ap,ab,vmin,vmax);
-            if ~isempty(phases)
+            if lateral_enabled
+                [phases,feasible,diagnostic]=vhybrid_segmented_speed_phases( ...
+                    segment_lengths,segment_curvatures,v0,vf,cruise_speed,dyn, ...
+                    max_lateral_acceleration,tolerance,stop_distance,wait_time);
+                diagnostic.candidate_kind='multi_phase';
+                profile_attempts{end+1,1}=diagnostic; %#ok<AGROW>
+            else
+                phases=buildMultiPhaseSegments(distance,v0,vf,cruise_speed, ...
+                    stop_distance,wait_time,ap,ab,vmin,vmax);
+                feasible=~isempty(phases);
+                diagnostic=struct();
+            end
+            if feasible
                 candidates(end+1,1)=struct('phases',phases, ...
                     'wait_time_s',wait_time,'cruise_speed_mps',cruise_speed, ...
-                    'stop_distance_fraction',fraction); %#ok<AGROW>
+                    'stop_distance_fraction',fraction, ...
+                    'profile_diagnostics',diagnostic); %#ok<AGROW>
             end
         end
     end
