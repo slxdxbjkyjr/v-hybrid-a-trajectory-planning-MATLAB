@@ -1,5 +1,5 @@
 function [g_cost, h_cost, f_cost, terms] = vhybrid_cost(parent_node, ...
-    child_state, goal_state, planner_config, travelled_distance, steering_angle, child_gear, is_gear_change)
+    child_state, goal_state, planner_config, travelled_distance, steering_angle, child_gear, is_gear_change, compute_heuristic)
 %VHYBRID_COST 计算 V-Hybrid A* 节点代价。
 %
 % 输入：
@@ -24,6 +24,7 @@ if nargin < 7
     if isfield(parent_node,'gear'), child_gear = parent_node.gear; end
 end
 if nargin < 8, is_gear_change = false; end
+if nargin < 9, compute_heuristic = true; end
 reverse_factor = 1;
 if child_gear < 0 && isfield(cfg,'reverse_penalty'), reverse_factor = cfg.reverse_penalty; end
 switch_term = 0;
@@ -58,9 +59,15 @@ g_cost = parent_node.g_cost + cfg.weight_distance * reverse_factor * distance_te
     + cfg.weight_reference_speed * reference_speed_term ...
     + cfg.weight_heading_change * heading_term ...
     + cfg.weight_time * time_term + switch_term;
-% 起点与子节点必须使用完全相同的几何启发和权重；g仍为实际累计代价。
-[h_cost,terms.heuristic_distance,terms.heuristic_method] = ...
-    vhybrid_heuristic(child_state,goal_state,cfg);
+% 连接积分中间点不入Open，只用于累计真实g和重建轨迹，可跳过未使用的h。
+if compute_heuristic
+    [h_cost,terms.heuristic_distance,terms.heuristic_method] = ...
+        vhybrid_heuristic(child_state,goal_state,cfg);
+else
+    h_cost = 0;
+    terms.heuristic_distance = 0;
+    terms.heuristic_method = 'disabled';
+end
 f_cost = g_cost + h_cost;
 end
 

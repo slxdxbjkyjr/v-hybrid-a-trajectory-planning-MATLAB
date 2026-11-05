@@ -82,6 +82,22 @@ classdef test_vhybrid_core < matlab.unittest.TestCase
                 abs(child_state(4)-testCase.PlannerConfig.vhybrid.reference_speed_mps), 'AbsTol', 1e-12);
         end
 
+        function testCostCanSkipUnusedHeuristic(testCase)
+            parent = vhybrid_node([3,3,0,0.5,0],0,0,0,0,0,[6,6,12,2,0],1);
+            child_state = [3.5,3.0,0.1,0.7,0.5];
+            goal = [10,3,0,0,0];
+            [default_g,default_h,default_f] = vhybrid_cost(parent,child_state, ...
+                goal,testCase.PlannerConfig,0.5,0);
+            [fast_g,fast_h,fast_f,terms] = vhybrid_cost(parent,child_state, ...
+                goal,testCase.PlannerConfig,0.5,0,1,false,false);
+
+            testCase.verifyEqual(fast_g,default_g,'AbsTol',1e-12);
+            testCase.verifyEqual(default_f,default_g+default_h,'AbsTol',1e-12);
+            testCase.verifyEqual(fast_h,0);
+            testCase.verifyEqual(fast_f,fast_g,'AbsTol',1e-12);
+            testCase.verifyEqual(terms.heuristic_method,'disabled');
+        end
+
         function testOpenSetReturnsMinimumCost(testCase)
             open = vhybrid_open_set();
             node_a = vhybrid_node([0,0,0,0,0],0,0,0,3,2,[0,0,0,0,0],1);

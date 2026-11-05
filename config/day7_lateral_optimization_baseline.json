@@ -1,0 +1,41 @@
+{
+  "stage": "day7_lateral_limit_task4_performance_baseline",
+  "scenario_config": "scenario_day7_lateral.json",
+  "planner_config": "planner_config_day7_lateral.json",
+  "vehicle_config": "vehicle_config_day7.json",
+  "map_config": "map_config_day7.json",
+  "output_directory": "outputs/day7_four_vehicle_lateral_limit_optimization/baseline_rerun",
+  "planning_order": ["vehicle_001", "vehicle_002", "vehicle_004", "vehicle_003"],
+  "stages": [
+    {
+      "id": "01_vehicle_001",
+      "vehicle_ids": ["vehicle_001"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 240
+    },
+    {
+      "id": "02_vehicle_001_004",
+      "vehicle_ids": ["vehicle_001", "vehicle_004"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 360
+    },
+    {
+      "id": "03_all_four_vehicles",
+      "vehicle_ids": ["vehicle_001", "vehicle_002", "vehicle_004", "vehicle_003"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 480
+    }
+  ],
+  "unchanged_constraints": {
+    "max_lateral_acceleration_mps2": 4.9,
+    "lateral_acceleration_tolerance_mps2": 1,
+    "require_immediate_start": false,
+    "safety_margin_source": "vehicle_config_day7.json",
+    "time_horizon_s": 60,
+    "speed_limit_mps": 10,
+    "longitudinal_acceleration_min_mps2": -6,
+    "longitudinal_acceleration_max_mps2": 4,
+    "motion_model": "existing average-speed integration"
+  },
+  "notes": "Performance baseline rerun with unchanged scene, stage order, constraints, search budgets, and speed/control samples. Only the output directory differs from the Day 7 task configuration."
+}

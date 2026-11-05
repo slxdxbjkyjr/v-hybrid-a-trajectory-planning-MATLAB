@@ -561,6 +561,10 @@ end
 
 function path = validateDynamic(path,vehicle,planner,st_map,higher)
 %VALIDATEDYNAMIC 对完整规划结果及终点停车驻留执行独立的动态安全验收。
+% Earlier final-state or kinematic failures are not valid collision inputs.
+if ~isfield(path,'valid') || ~path.valid || isempty(path.t) || isempty(path.x)
+    return;
+end
 if isempty(st_map) && isempty(higher), return; end
 [collision,report] = check_trajectory_conflict(path,higher,vehicle,planner,st_map);
 if ~collision && ~isempty(higher) && planner.day6.goal_hold_enabled

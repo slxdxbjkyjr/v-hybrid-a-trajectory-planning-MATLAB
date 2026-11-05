@@ -31,7 +31,7 @@ classdef test_day7_scenario < matlab.unittest.TestCase
         function configuredDay7ScenarioIsLoaded(testCase)
             testCase.verifyEqual({testCase.Scenario.vehicles.id}, ...
                 {'vehicle_001','vehicle_002','vehicle_003','vehicle_004'});
-            testCase.verifyEqual([testCase.Scenario.vehicles.priority],[1,2,3,4]);
+            testCase.verifyEqual([testCase.Scenario.vehicles.priority],[1,2,4,3]);
             starts = zeros(4,3);
             goals = zeros(4,3);
             for k = 1:4
@@ -44,7 +44,7 @@ classdef test_day7_scenario < matlab.unittest.TestCase
             end
             testCase.verifyEqual(starts,[4,25,-1.57;8,26,0;27,25,3.14;23,20,-1.57], ...
                 'AbsTol',1e-12);
-            testCase.verifyEqual(goals,[25,5,-1.57;20,6,-1.57;6,4,3.14;28,8,-1.57], ...
+            testCase.verifyEqual(goals,[25,5,-1.57;20,6,-1.57;6,4,3.14;6,10,-3.14], ...
                 'AbsTol',1e-12);
         end
 

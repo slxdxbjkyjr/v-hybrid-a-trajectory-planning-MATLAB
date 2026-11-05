@@ -458,7 +458,7 @@ while segment <= 3 && phase <= size(phases,1)
         if day6_static_collision_core(next(1:3),static_context)
             reason='collision'; return;
         end
-        [g,h]=vhybrid_cost(previous,next,goal,planner,0,0,gear,false);
+        [g,h]=vhybrid_cost(previous,next,goal,planner,0,0,gear,false,false);
         if isfinite(cost_limit) && isfinite(g) && g>=cost_limit
             reason='cost_bound'; return;
         end
@@ -503,7 +503,7 @@ while segment <= 3 && phase <= size(phases,1)
     if day6_static_collision_core(next(1:3),static_context)
         reason = 'collision'; return;
     end
-    [g,h] = vhybrid_cost(previous,next,goal,planner,ds,steering,gear,false);
+    [g,h] = vhybrid_cost(previous,next,goal,planner,ds,steering,gear,false,false);
     % 已付代价也是完整路径的下界；非负项的后续累加不能再降低g。
     % 不使用h/f，也不假设每个航向增量小于pi。
     if isfinite(cost_limit) && isfinite(g) && g >= cost_limit

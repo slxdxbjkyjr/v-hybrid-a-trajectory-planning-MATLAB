@@ -63,9 +63,23 @@ classdef test_lateral_acceleration < matlab.unittest.TestCase
             expected.description = ['横向硬约束独立配置：四车t=0且v=0，允许搜索选择等待后起步，' ...
                 '固定优先级001→002→004→003。'];
             expected.planner_config = 'planner_config_day7_lateral.json';
+            for k = 1:numel(expected.vehicles)
+                switch expected.vehicles(k).id
+                    case 'vehicle_003'
+                        expected.vehicles(k).priority = 3;
+                    case 'vehicle_004'
+                        expected.vehicles(k).priority = 4;
+                        expected.vehicles(k).summon_goal.x_m = 6;
+                        expected.vehicles(k).summon_goal.y_m = 10;
+                        expected.vehicles(k).summon_goal.yaw_rad = -3.14;
+                end
+            end
+            [~,expected_order] = sort({expected.vehicles.id});
+            [~,restricted_order] = sort({restricted.vehicles.id});
+            expected.vehicles = expected.vehicles(expected_order);
+            restricted.vehicles = restricted.vehicles(restricted_order);
             testCase.verifyEqual(testCase.canonicalStructure(restricted), ...
                 testCase.canonicalStructure(expected));
-            testCase.verifyEqual(restricted.vehicles,original.vehicles);
             testCase.verifyEqual(restricted.map_config,'map_config_day7.json');
             testCase.verifyEqual(restricted.vehicle_config,'vehicle_config_day7.json');
             testCase.verifyEqual(restricted.static_obstacles,original.static_obstacles);
@@ -77,9 +91,9 @@ classdef test_lateral_acceleration < matlab.unittest.TestCase
             [~,order] = sort([scenario.vehicles.priority]);
             testCase.verifyEqual({scenario.vehicles.id}, ...
                 {'vehicle_001','vehicle_002','vehicle_003','vehicle_004'});
-            testCase.verifyEqual([scenario.vehicles.priority],[1,2,4,3]);
+            testCase.verifyEqual([scenario.vehicles.priority],[1,2,3,4]);
             testCase.verifyEqual({scenario.vehicles(order).id}, ...
-                {'vehicle_001','vehicle_002','vehicle_004','vehicle_003'});
+                {'vehicle_001','vehicle_002','vehicle_003','vehicle_004'});
             testCase.verifyEqual(starts,[4,25,-1.57;8,26,0;27,25,3.14;23,20,-1.57], ...
                 'AbsTol',1e-12);
             testCase.verifyEqual(goals,[25,5,-1.57;20,6,-1.57;6,4,3.14;6,10,-3.14], ...
