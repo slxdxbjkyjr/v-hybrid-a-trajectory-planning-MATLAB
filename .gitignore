@@ -1,0 +1,5 @@
+# MATLAB 仿真输出与缓存
+outputs/
+*.mat
+*.csv
+*.asv
