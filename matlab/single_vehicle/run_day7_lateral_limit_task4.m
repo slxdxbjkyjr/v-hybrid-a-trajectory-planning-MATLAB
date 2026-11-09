@@ -19,6 +19,7 @@ scenario = jsondecode(fileread(fullfile(config_dir,task.scenario_config)));
 vehicle = jsondecode(fileread(fullfile(config_dir,task.vehicle_config)));
 map_config = jsondecode(fileread(fullfile(config_dir,task.map_config)));
 planner_base = jsondecode(fileread(fullfile(config_dir,task.planner_config)));
+planner_base = applySearchOverrides(planner_base,task);
 validateInputs(task,scenario,planner_base);
 
 planner_base.vhybrid.heuristic_weight = planner_base.day6.search_heuristic_weight;
@@ -237,6 +238,44 @@ for k = 1:numel(fields)
 end
 end
 
+function planner = applySearchOverrides(planner,task)
+%APPLYSEARCHOVERRIDES Apply isolated per-task search strategy overrides.
+% Only search ordering/refinement fields are accepted; scene and safety
+% constraints remain owned by the referenced planner and vehicle configs.
+if ~isfield(task,'vehicle_search_overrides'), return; end
+overrides = task.vehicle_search_overrides;
+if ~isstruct(overrides) || ~isscalar(overrides)
+    error('Day7Lateral:InvalidSearchOverrides', ...
+        'vehicle_search_overrides 必须是按车辆ID组织的JSON对象。');
+end
+allowed = {'goal_connection_selection','solution_refinement_time_s', ...
+    'heuristic_method','heuristic_weight', ...
+    'goal_connection_duplicate_profile_pruning_enabled'};
+vehicle_ids = fieldnames(overrides);
+if ~isfield(planner,'day7_vehicle_search_overrides')
+    planner.day7_vehicle_search_overrides = struct();
+end
+for k = 1:numel(vehicle_ids)
+    id = vehicle_ids{k};
+    fields = fieldnames(overrides.(id));
+    for j = 1:numel(fields)
+        name = fields{j};
+        if ~any(strcmp(name,allowed))
+            error('Day7Lateral:UnsupportedSearchOverride', ...
+                '不允许通过任务覆盖字段 %s。',name);
+        end
+    end
+    if ~isfield(planner.day7_vehicle_search_overrides,id)
+        planner.day7_vehicle_search_overrides.(id) = struct();
+    end
+    patch = overrides.(id);
+    for j = 1:numel(fields)
+        name = fields{j};
+        planner.day7_vehicle_search_overrides.(id).(name) = patch.(name);
+    end
+end
+end
+
 function [start,goal] = vehicleStates(vehicle)
 %VEHICLESTATES Construct a new search start at t=0 and v=0.
 start = [vehicle.start_pose.x_m,vehicle.start_pose.y_m,vehicle.start_pose.yaw_rad,0,0];
@@ -313,6 +352,29 @@ if path.valid && ~isempty(path.t)
     record.longitudinal_acceleration_range_mps2 = ...
         [validation.longitudinal.minimum_acceleration_mps2, ...
         validation.longitudinal.maximum_acceleration_mps2];
+end
+end
+
+function reason = failureReason(path,validation)
+%FAILUREREASON Convert a failed search or validation into a stable summary.
+% Keep validation evidence ahead of the planner error code so a path that was
+% found but rejected during replay remains distinguishable from search failure.
+if isstruct(validation) && isfield(validation,'failure_reasons') && ...
+        ~isempty(validation.failure_reasons)
+    reason = strjoin(validation.failure_reasons,',');
+    return;
+end
+if isstruct(path) && isfield(path,'failure_diagnostics') && ...
+        isstruct(path.failure_diagnostics) && ...
+        isfield(path.failure_diagnostics,'reason') && ...
+        ~isempty(path.failure_diagnostics.reason)
+    reason = char(path.failure_diagnostics.reason);
+    return;
+end
+if isstruct(path) && isfield(path,'error_code')
+    reason = sprintf('search_error_%d',double(path.error_code));
+else
+    reason = 'search_failed';
 end
 end
 

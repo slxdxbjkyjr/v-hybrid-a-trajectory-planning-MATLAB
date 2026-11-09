@@ -521,6 +521,26 @@ classdef test_dynamic_collision < matlab.unittest.TestCase
             testCase.verifyEqual(statistics.collision_pruned, 0);
         end
 
+        function expansionStillChecksEndpointAfterStateReuse(testCase)
+            planner = testCase.smallPlanner();
+            planner.vhybrid.reverse_enabled = false;
+            planner.vhybrid.control_acceleration_samples_mps2 = 0;
+            planner.vhybrid.control_steering_samples_rad = 0;
+            vehicle = testCase.tinyVehicle();
+            geometry = testCase.openGeometry();
+            geometry.boundary_xy = [0, 0; 11.05, 0; 11.05, 20; 0, 20; 0, 0];
+            geometry.bounds = [0, 0, 11.05, 20];
+            parent = vhybrid_node([10, 10, 0, 2, 0], 0, 0, 5, 0, 0, ...
+                [20, 20, 0, 8, 0], 6);
+
+            [children, statistics] = vhybrid_expand_node(parent,geometry, ...
+                vehicle,planner,[20, 10, 0, 0, 0]);
+
+            testCase.verifyEmpty(children);
+            testCase.verifyEqual(statistics.collision_pruned,1);
+            testCase.verifyEqual(statistics.reason_counts.static_collision,1);
+        end
+
         function simultaneousStartRequiresPositiveAcceleration(testCase)
             planner = testCase.smallPlanner();
             planner.vhybrid.control_acceleration_samples_mps2 = [-2, 0, 2];

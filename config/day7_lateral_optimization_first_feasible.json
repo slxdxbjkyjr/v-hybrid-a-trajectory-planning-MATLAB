@@ -1,0 +1,35 @@
+{
+  "stage": "day7_lateral_first_feasible_strategy_test",
+  "scenario_config": "scenario_day7_lateral.json",
+  "planner_config": "planner_config_day7_lateral.json",
+  "vehicle_config": "vehicle_config_day7.json",
+  "map_config": "map_config_day7.json",
+  "output_directory": "outputs/day7_four_vehicle_lateral_limit_optimization/first_feasible",
+  "planning_order": ["vehicle_001", "vehicle_002", "vehicle_004", "vehicle_003"],
+  "stages": [
+    {
+      "id": "01_vehicle_001",
+      "vehicle_ids": ["vehicle_001"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 240
+    },
+    {
+      "id": "02_vehicle_001_004",
+      "vehicle_ids": ["vehicle_001", "vehicle_004"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 360
+    },
+    {
+      "id": "03_all_four_vehicles",
+      "vehicle_ids": ["vehicle_001", "vehicle_002", "vehicle_004", "vehicle_003"],
+      "max_search_nodes": 200000,
+      "max_search_time_s": 480
+    }
+  ],
+  "vehicle_search_overrides": {
+    "vehicle_002": {"goal_connection_selection": "first_feasible"},
+    "vehicle_004": {"goal_connection_selection": "first_feasible"},
+    "vehicle_003": {"goal_connection_selection": "first_feasible"}
+  },
+  "notes": "Single-variable search strategy experiment. Keeps the frozen Day 7 scenario, priority, vehicle and safety parameters, lateral limit, speed and acceleration limits, control samples, motion integration, time-space horizon, and search budgets unchanged. Only terminal-connection selection changes from lowest_cost to first_feasible for 002/004/003. Outputs are isolated from the baseline."
+}

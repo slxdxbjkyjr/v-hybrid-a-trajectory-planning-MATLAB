@@ -23,6 +23,15 @@ if isfield(cfg,'goal_connection_selection')
 end
 select_lowest_cost = strcmp(selection_mode,'lowest_cost');
 best_connection_cost = Inf;
+duplicate_profile_pruning_enabled = false;
+if isfield(cfg,'goal_connection_duplicate_profile_pruning_enabled')
+    duplicate_profile_pruning_enabled = cfg.goal_connection_duplicate_profile_pruning_enabled;
+    if ~islogical(duplicate_profile_pruning_enabled) || ...
+            ~isscalar(duplicate_profile_pruning_enabled)
+        error('VHybrid:InvalidDuplicateProfilePruning', ...
+            'goal_connection_duplicate_profile_pruning_enabled 必须为逻辑标量。');
+    end
+end
 % 缺省不限制连接累计转角，保留Day6；有限门限可拒绝近目标整圈绕行。
 max_connection_turn = Inf;
 if isfield(cfg,'goal_connection_max_turn_rad')
@@ -69,6 +78,7 @@ statistics = struct('candidates', 0, 'collision_pruned', 0, ...
     'turning_geometry_pruned',0, ...
     'cost_bound_enabled',false,'cost_bound_pruned',0, ...
     'cost_bound_integration_pruned',0,'multi_phase_candidates',0, ...
+    'duplicate_profiles_pruned',0, ...
     'multi_phase_collision_pruned',0,'multi_phase_cost_pruned',0, ...
     'multi_phase_selected',false,'multi_phase_stop_wait_s',NaN, ...
     'multi_phase_cruise_speed_mps',NaN,'multi_phase_stop_distance_fraction',NaN);
@@ -152,6 +162,7 @@ for curve_id = 1:numel(curves)
         statistics.reason_counts.(key) = statistics.reason_counts.(key)+1;
         continue;
     end
+    attempted_profiles = cell(0,1);
     for cruise_speed = speeds
         statistics.candidates = statistics.candidates + 1;
         if lateral_cfg.enabled
@@ -177,6 +188,21 @@ for curve_id = 1:numel(curves)
                 statistics = countReason(statistics,profile_diagnostic.reason);
             end
             continue;
+        end
+        if duplicate_profile_pruning_enabled
+            duplicate_profile = false;
+            for profile_id = 1:numel(attempted_profiles)
+                if isequal(phases,attempted_profiles{profile_id})
+                    duplicate_profile = true;
+                    break;
+                end
+            end
+            if duplicate_profile
+                statistics.duplicate_profiles_pruned = ...
+                    statistics.duplicate_profiles_pruned+1;
+                continue;
+            end
+            attempted_profiles{end+1,1} = phases; %#ok<AGROW>
         end
         cost_limit = Inf;
         if statistics.cost_bound_enabled && isfinite(best_connection_cost)

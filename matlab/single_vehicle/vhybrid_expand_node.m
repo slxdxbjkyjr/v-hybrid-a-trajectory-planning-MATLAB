@@ -101,10 +101,17 @@ for steering_angle = steering_values
             static_states(1,:) = current_state;
         end
         for sample_id = 1:sample_count
-            ratio = sample_id/sample_count;
-            [sample_state,~,~,sample_valid] = summon_vehicle_dynamic_gear( ...
-                current_state,steering_angle,acceleration,cfg.time_step_s*ratio, ...
-                vehicle_config,planner_config,gear);
+            if sample_id == sample_count
+                % The full-step state was already integrated above; retain the
+                % endpoint check and dynamic sample without integrating it twice.
+                sample_state = next_state;
+                sample_valid = true;
+            else
+                ratio = sample_id/sample_count;
+                [sample_state,~,~,sample_valid] = summon_vehicle_dynamic_gear( ...
+                    current_state,steering_angle,acceleration,cfg.time_step_s*ratio, ...
+                    vehicle_config,planner_config,gear);
+            end
             if ~sample_valid
                 collision = true; break;
             end

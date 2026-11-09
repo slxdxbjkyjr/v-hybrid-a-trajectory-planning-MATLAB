@@ -154,6 +154,42 @@ classdef test_vhybrid_lateral_connection_profile < matlab.unittest.TestCase
                 statistics.speed_profile_diagnostics.selected.profile_piece_speed_limits_mps+1e-9);
         end
 
+        function exactDuplicateProfilesSkipOnlyRepeatedIntegration(testCase)
+            parent = vhybrid_node([10,10,0,0,0],0,0,0,0,0,[20,20,12,0,0],1,1,false);
+            planner = testCase.Planner;
+            planner.vhybrid.goal_connection_selection = 'lowest_cost';
+            planner.vhybrid.goal_connection_cost_pruning_enabled = false;
+            planner.vhybrid.goal_connection_speed_samples_mps = [10,9,8];
+            planner.vhybrid.goal_connection_duplicate_profile_pruning_enabled = false;
+            [plain_success,plain_nodes,plain_stats] = vhybrid_goal_connection(parent, ...
+                [14,10,0,0,0],testCase.Map,testCase.Vehicle,planner);
+
+            planner.vhybrid.goal_connection_duplicate_profile_pruning_enabled = true;
+            [dedup_success,dedup_nodes,dedup_stats] = vhybrid_goal_connection(parent, ...
+                [14,10,0,0,0],testCase.Map,testCase.Vehicle,planner);
+
+            testCase.verifyTrue(plain_success);
+            testCase.verifyEqual(dedup_success,plain_success);
+            testCase.verifyGreaterThan(dedup_stats.duplicate_profiles_pruned,0);
+            testCase.verifyEqual(plain_stats.duplicate_profiles_pruned,0);
+            for field = {'x','y','theta','v','t','acceleration','steering_angle', ...
+                    'travelled_distance','g_cost'}
+                values_plain = [plain_nodes.(field{1})];
+                values_dedup = [dedup_nodes.(field{1})];
+                testCase.verifyEqual(values_dedup,values_plain,'AbsTol',0, ...
+                    sprintf('Duplicated profiles changed node field %s.',field{1}));
+            end
+
+            legacy_planner = planner;
+            legacy_planner.vhybrid = rmfield( ...
+                legacy_planner.vhybrid,'goal_connection_duplicate_profile_pruning_enabled');
+            [legacy_success,legacy_nodes,legacy_stats] = vhybrid_goal_connection(parent, ...
+                [14,10,0,0,0],testCase.Map,testCase.Vehicle,legacy_planner);
+            testCase.verifyEqual(legacy_success,plain_success);
+            testCase.verifyEqual(legacy_stats.duplicate_profiles_pruned,0);
+            testCase.verifyEqual([legacy_nodes.g_cost],[plain_nodes.g_cost],'AbsTol',0);
+        end
+
         function multiPhaseConnectorUsesCurvatureProfile(testCase)
             planner = testCase.Planner;
             planner.vhybrid.goal_connection_selection = 'lowest_cost';
