@@ -521,6 +521,115 @@ classdef test_dynamic_collision < matlab.unittest.TestCase
             testCase.verifyEqual(statistics.collision_pruned, 0);
         end
 
+        function movingObstacleDoesNotImplyFasterControlDominance(testCase)
+            planner = testCase.smallPlanner();
+            planner.day6.goal_hold_enabled = false;
+            planner.st_occupancy.trajectory_end_policy = 'release';
+            planner.day6.collision_sample_step_s = 0.005;
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = false;
+            planner.vhybrid.control_acceleration_samples_mps2 = [-2,0,2];
+            planner.vhybrid.control_steering_samples_rad = 0;
+            vehicle = testCase.tinyVehicle();
+            parent = vhybrid_node([10,10,0,2,0],0,0,5,0,0,[20,20,0,8,0],6);
+            obstacle = dynamic_vehicle_obstacle([10.7,9.1,pi/2,2,0; ...
+                10.7,10.1,pi/2,2,0.5],vehicle,'crossing',planner);
+            [children,statistics] = vhybrid_expand_node(parent, ...
+                testCase.openGeometry(),vehicle,planner,[20,10,0,0,0],[],obstacle);
+            testCase.verifyGreaterThanOrEqual(statistics.dynamic_pruned,1);
+            testCase.verifyEqual(statistics.faster_controls_skipped,0);
+            testCase.verifyTrue(any([children.acceleration]==2));
+            testCase.verifyFalse(any([children.acceleration]==-2));
+
+            % The optional heuristic deliberately trades completeness for speed.
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = true;
+            [pruned,enabled] = vhybrid_expand_node(parent, ...
+                testCase.openGeometry(),vehicle,planner,[20,10,0,0,0],[],obstacle);
+            testCase.verifyEmpty(pruned);
+            testCase.verifyEqual(enabled.sampled,1);
+            testCase.verifyEqual(enabled.braking_collision_pruned,1);
+            testCase.verifyEqual(enabled.faster_controls_skipped,2);
+            testCase.verifyGreaterThanOrEqual(enabled.dynamic_pruned,1);
+        end
+
+        function brakingCollisionDoesNotSuppressIndependentSteering(testCase)
+            planner = testCase.smallPlanner();
+            planner.day6.goal_hold_enabled = false;
+            planner.st_occupancy.trajectory_end_policy = 'release';
+            planner.day6.collision_sample_step_s = 0.005;
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = true;
+            planner.vhybrid.control_acceleration_samples_mps2 = [-2,0,2];
+            vehicle = testCase.tinyVehicle();
+            turn = vehicle.steering.maximum_steer_rad;
+            planner.vhybrid.control_steering_samples_rad = [0,turn];
+            parent = vhybrid_node([10,10,0,2,0],0,0,5,0,0,[20,20,0,8,0],6);
+            obstacle = dynamic_vehicle_obstacle([10.7,9.1,pi/2,2,0; ...
+                10.7,10.1,pi/2,2,0.5],vehicle,'crossing',planner);
+
+            [children,statistics] = vhybrid_expand_node(parent, ...
+                testCase.openGeometry(),vehicle,planner,[20,10,0,0,0],[],obstacle);
+
+            testCase.assertNotEmpty(children);
+            testCase.verifyEqual(statistics.faster_controls_skipped,2);
+            testCase.verifyEqual(statistics.braking_collision_pruned,1);
+            testCase.verifyEqual(statistics.sampled,4);
+            testCase.verifyEqual([children.steering_angle], ...
+                repmat(turn,1,3),'AbsTol',1e-12);
+            testCase.verifyEqual(sort([children.acceleration]),[-2,0,2],'AbsTol',1e-12);
+        end
+
+        function reverseBrakingCollisionCanSuppressFasterReverseControls(testCase)
+            planner = testCase.smallPlanner();
+            planner.vhybrid.reverse_enabled = true;
+            planner.day6.goal_hold_enabled = false;
+            planner.st_occupancy.trajectory_end_policy = 'release';
+            planner.day6.collision_sample_step_s = 0.005;
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = false;
+            planner.vhybrid.control_acceleration_samples_mps2 = [-2,0,2];
+            planner.vhybrid.control_steering_samples_rad = 0;
+            vehicle = testCase.tinyVehicle();
+            parent = vhybrid_node([10,10,0,2,0],0,0,5,0,0,[20,20,0,8,0],6,-1);
+            obstacle = dynamic_vehicle_obstacle([9.3,9.1,pi/2,2,0; ...
+                9.3,10.1,pi/2,2,0.5],vehicle,'crossing',planner);
+
+            [children,disabled] = vhybrid_expand_node(parent, ...
+                testCase.openGeometry(),vehicle,planner,[5,10,0,0,0],[],obstacle);
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = true;
+            [pruned,enabled] = vhybrid_expand_node(parent, ...
+                testCase.openGeometry(),vehicle,planner,[5,10,0,0,0],[],obstacle);
+
+            testCase.assertNotEmpty(children);
+            testCase.verifyTrue(any([children.acceleration]==2));
+            testCase.verifyEqual([children.gear],-ones(1,numel(children)));
+            testCase.verifyLessThan([children.x],parent.x);
+            testCase.verifyEqual(disabled.faster_controls_skipped,0);
+            testCase.verifyEmpty(pruned);
+            testCase.verifyEqual(enabled.sampled,1);
+            testCase.verifyEqual(enabled.braking_collision_pruned,1);
+            testCase.verifyEqual(enabled.faster_controls_skipped,2);
+        end
+
+        function brakingEndpointCollisionRetainsIndependentFasterChecks(testCase)
+            planner = testCase.smallPlanner();
+            planner.vhybrid.dynamic_braking_dominance_pruning_enabled = true;
+            planner.vhybrid.control_acceleration_samples_mps2 = [-2,0,2];
+            planner.vhybrid.control_steering_samples_rad = 0;
+            vehicle = testCase.tinyVehicle();
+            geometry = testCase.openGeometry();
+            geometry.boundary_xy = [0,0;10.84,0;10.84,20;0,20;0,0];
+            geometry.bounds = [0,0,10.84,20];
+            parent = vhybrid_node([10,10,0,2,0],0,0,5,0,0,[20,20,0,8,0],6);
+
+            [children,statistics] = vhybrid_expand_node(parent,geometry, ...
+                vehicle,planner,[10,15,pi/2,0,0],st_occupancy_map(planner),[]);
+
+            testCase.verifyEmpty(children);
+            testCase.verifyEqual(statistics.sampled,3);
+            testCase.verifyEqual(statistics.reason_counts.static_collision,3);
+            testCase.verifyEqual(statistics.braking_collision_pruned,0);
+            testCase.verifyEqual(statistics.braking_midpoint_pruned,0);
+            testCase.verifyEqual(statistics.faster_controls_skipped,0);
+        end
+
         function expansionStillChecksEndpointAfterStateReuse(testCase)
             planner = testCase.smallPlanner();
             planner.vhybrid.reverse_enabled = false;

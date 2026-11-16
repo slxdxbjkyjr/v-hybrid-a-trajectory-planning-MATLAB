@@ -1,0 +1,9 @@
+{
+  "schema_version": "four_vehicle.uniform.v1",
+  "description": "Fresh search with one shared policy for all cars and scenarios.",
+  "scenario_config": "scenario_four_vehicle_uniform_current.json",
+  "planner_config": "planner_config_four_vehicle_uniform.json",
+  "vehicle_config": "vehicle_config_day7.json",
+  "map_config": "map_config_day7.json",
+  "output_directory": "outputs/four_vehicle_lateral_uniform"
+}

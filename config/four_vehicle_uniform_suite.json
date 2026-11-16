@@ -1,0 +1,29 @@
+{
+  "description": "Six scenes confirmed by user on 2026-11-10; no per-scene policy changes.",
+  "scenarios": [
+    {
+      "id": "current",
+      "scenario_config": "scenarios_uniform/current.json"
+    },
+    {
+      "id": "rotate90",
+      "scenario_config": "scenarios_uniform/rotate90.json"
+    },
+    {
+      "id": "rotate180",
+      "scenario_config": "scenarios_uniform/rotate180.json"
+    },
+    {
+      "id": "rotate270",
+      "scenario_config": "scenarios_uniform/rotate270.json"
+    },
+    {
+      "id": "mirror_x15",
+      "scenario_config": "scenarios_uniform/mirror_x15.json"
+    },
+    {
+      "id": "heading_plus_0p2",
+      "scenario_config": "scenarios_uniform/heading_plus_0p2.json"
+    }
+  ]
+}

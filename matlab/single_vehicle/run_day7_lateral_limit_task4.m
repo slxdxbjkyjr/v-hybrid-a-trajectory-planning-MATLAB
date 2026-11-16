@@ -1,29 +1,54 @@
-function result = run_day7_lateral_limit_task4(task_file)
+function result = run_day7_lateral_limit_task4(task_file,options)
 %RUN_DAY7_LATERAL_LIMIT_TASK4 Re-search the frozen Day 7 scene in stages.
 % Each stage starts with a fresh space-time map and searches its vehicles anew.
 
 project_dir = fileparts(fileparts(fileparts(mfilename('fullpath'))));
 config_dir = fullfile(project_dir,'config');
+if nargin<2, options = struct(); end
+save_outputs = true;
+if isfield(options,'save_outputs'), save_outputs = options.save_outputs; end
+if ~islogical(save_outputs) || ~isscalar(save_outputs)
+    error('Day7Task4:InvalidOptions','save_outputs must be a logical scalar.');
+end
 if nargin < 1 || isempty(task_file)
     task_file = fullfile(config_dir,'day7_lateral_limit_task4.json');
-else
+elseif ~isstruct(task_file)
     task_file = char(task_file);
     if ~isfile(task_file)
         task_file = fullfile(config_dir,task_file);
     end
 end
-task = jsondecode(fileread(task_file));
+if isstruct(task_file)
+    task = task_file;
+    task_file = 'in_memory_task';
+else
+    task = jsondecode(fileread(task_file));
+end
+uniform = isfield(task,'planning_policy') && strcmp(task.planning_policy,'uniform_shared');
 output_dir = fullfile(project_dir,strrep(task.output_directory,'/',filesep));
-if ~exist(output_dir,'dir'), mkdir(output_dir); end
-scenario = jsondecode(fileread(fullfile(config_dir,task.scenario_config)));
+if isfield(task,'scenario')
+    scenario = task.scenario;
+else
+    scenario = jsondecode(fileread(fullfile(config_dir,task.scenario_config)));
+end
 vehicle = jsondecode(fileread(fullfile(config_dir,task.vehicle_config)));
 map_config = jsondecode(fileread(fullfile(config_dir,task.map_config)));
 planner_base = jsondecode(fileread(fullfile(config_dir,task.planner_config)));
-planner_base = applySearchOverrides(planner_base,task);
-validateInputs(task,scenario,planner_base);
-
-planner_base.vhybrid.heuristic_weight = planner_base.day6.search_heuristic_weight;
-planner_base.vhybrid.heuristic_method = planner_base.day6.heuristic_method;
+if uniform
+    if isfield(task,'vehicle_search_overrides') || isfield(task,'planning_order')
+        error('Day7Uniform:TaskOverrides','Order belongs to the scenario; per-vehicle overrides are forbidden.');
+    end
+    [scenario,planner_base] = day7_uniform_configuration(scenario,planner_base);
+    task.planning_order = scenario.planning_order;
+    task.stages = struct('id','all_four_vehicles','vehicle_ids',{task.planning_order}, ...
+        'max_search_nodes',planner_base.vhybrid.max_search_nodes, ...
+        'max_search_time_s',planner_base.vhybrid.max_search_time_s);
+else
+    planner_base = applySearchOverrides(planner_base,task);
+    validateInputs(task,scenario,planner_base);
+    planner_base.vhybrid.heuristic_weight = planner_base.day6.search_heuristic_weight;
+    planner_base.vhybrid.heuristic_method = planner_base.day6.heuristic_method;
+end
 delta_max = min(vehicle.steering.maximum_steer_rad,planner_base.dynamics.delta_max_rad);
 planner_base.vhybrid.minimum_turning_radius_m = ...
     vehicle.dimensions_m.wheelbase/tan(delta_max);
@@ -31,13 +56,16 @@ validate_st_occupancy_config(planner_base);
 geometry = summon_map(map_config);
 ordered_ids = task.planning_order(:).';
 vehicles = selectVehicles(scenario.vehicles,ordered_ids);
-[poses_valid,pose_report] = validateInitialPoses(vehicles,geometry,vehicle,planner_base);
+[poses_valid,pose_report] = validateInitialPoses(vehicles,geometry,vehicle,planner_base,uniform);
 
 snapshot = struct('task_config',task,'scenario',scenario,'planner_config',planner_base, ...
     'vehicle_config',vehicle,'map_config',map_config, ...
     'motion_model','existing average-speed integration; step definition unchanged');
-writeJson(fullfile(output_dir,'effective_config_snapshot.json'),snapshot);
-save(fullfile(output_dir,'effective_config_snapshot.mat'),'snapshot','-v7');
+if save_outputs
+    if ~exist(output_dir,'dir'), mkdir(output_dir); end
+    writeJson(fullfile(output_dir,'effective_config_snapshot.json'),snapshot);
+    save(fullfile(output_dir,'effective_config_snapshot.mat'),'snapshot','-v7');
+end
 result = struct('valid',false,'reason','not_started','planning_order',{ordered_ids}, ...
     'pose_validation',pose_report,'stages',repmat(emptyStage(),numel(task.stages),1), ...
     'output_files',struct(),'effective_configuration',struct());
@@ -68,6 +96,7 @@ for stage_index = 1:numel(task.stages)
 
     if ~poses_valid
         stage.reason = 'invalid_frozen_scene_initial_poses';
+        if uniform, stage.reason = 'invalid_scene_poses'; end
         stage.failure_diagnostics = pose_report;
     else
         % Rebuild all occupancy from this stage's new searches only.
@@ -82,18 +111,34 @@ for stage_index = 1:numel(task.stages)
         for k = 1:numel(stage_vehicles)
             current_vehicle = stage_vehicles(k);
             [start_state,goal_state] = vehicleStates(current_vehicle);
-            search_planner = plannerForVehicle(planner,current_vehicle.id);
+            search_planner = planner;
+            if ~uniform, search_planner = plannerForVehicle(planner,current_vehicle.id); end
             timer = tic;
             path = summon_vhybrid_astar(start_state,goal_state,geometry,vehicle, ...
                 search_planner,st_map,obstacles);
             elapsed = toc(timer);
+            validation_timer = tic;
             validation = validatePath(path,start_state,goal_state,geometry,vehicle,search_planner);
+            stage.independent_validation_time_s = stage.independent_validation_time_s+toc(validation_timer);
+            if uniform, elapsed = toc(timer); end
             path.task4_validation = validation;
             % Search-node internals are not part of the deliverable trajectory.
             if isfield(path,'search_nodes'), path.search_nodes = path.search_nodes([]); end
             stage.paths{k} = path;
             stage.per_vehicle(k) = makeVehicleRecord(current_vehicle,path,validation,elapsed);
+            if uniform
+                stage.per_vehicle(k).effective_search_config = search_planner.vhybrid;
+            end
             stage.search_time_s = stage.search_time_s+elapsed;
+            if uniform
+                fprintf('%s: valid=%d, search=%.3fs, expanded=%d, generated=%d\n', ...
+                    current_vehicle.id,path.valid,elapsed, ...
+                    path.search_statistics.expanded_nodes,path.search_statistics.generated_nodes);
+            end
+            if isfield(options,'progress_file')
+                writeJson(options.progress_file,struct('completed_vehicle',current_vehicle.id, ...
+                    'search_time_s',stage.search_time_s,'per_vehicle',stage.per_vehicle));
+            end
             if ~path.valid || ~validation.valid
                 stage.failure_vehicle_id = current_vehicle.id;
                 stage.failure_diagnostics = path.failure_diagnostics;
@@ -101,14 +146,18 @@ for stage_index = 1:numel(task.stages)
                 break;
             end
             % Immediately reserve the new trajectory and terminal parking hold.
+            occupancy_timer = tic;
             [st_map,~] = mark_trajectory_occupancy(st_map,path,vehicle,current_vehicle.id);
             obstacles(end+1,1) = dynamic_vehicle_obstacle( ...
                 path,vehicle,current_vehicle.id,search_planner); %#ok<AGROW>
             st_map = prepare_dynamic_context(st_map,obstacles);
+            stage.occupancy_update_time_s = stage.occupancy_update_time_s+toc(occupancy_timer);
         end
     end
+    pair_timer = tic;
     [stage.pairwise_validation,stage.pairs_valid] = validatePairs( ...
         stage.paths,stage.vehicle_ids,geometry,vehicle,planner,resource_plannerFor(planner));
+    stage.pairwise_validation_time_s = toc(pair_timer);
     stage.completed_searches = nnz(cellfun(@(p)isstruct(p) && isfield(p,'search_statistics'),stage.paths));
     all_paths = numel(stage.paths)==numel(stage.vehicle_ids) && ...
         all(cellfun(@(p)isstruct(p) && isfield(p,'valid') && p.valid,stage.paths));
@@ -116,8 +165,10 @@ for stage_index = 1:numel(task.stages)
     if stage.valid, stage.reason = 'passed'; end
     stage.stage_elapsed_s = stage.search_time_s;
     stage_dir = fullfile(output_dir,stage.id);
-    [stage.output_files,stage.metrics] = day7_task4_write_outputs( ...
-        stage,stage.per_vehicle,geometry,vehicle,planner,stage_dir,stage.id);
+    if save_outputs && ~uniform
+        [stage.output_files,stage.metrics] = day7_task4_write_outputs( ...
+            stage,stage.per_vehicle,geometry,vehicle,planner,stage_dir,stage.id);
+    end
     result.stages(stage_index) = stage;
 end
 
@@ -131,6 +182,15 @@ result.effective_configuration = struct('task_config_file',task_file, ...
     'motion_model',snapshot.motion_model, ...
     'stage_budgets',{arrayfun(@(s)s.effective_search_budget,result.stages, ...
     'UniformOutput',false)});
+result.configuration_snapshot = snapshot;
+result.search_time_s = final_stage.search_time_s;
+if uniform
+    result.effective_configuration.planning_policy = 'uniform_shared';
+    result.effective_configuration.common_search_config = planner_base.vhybrid;
+    result.effective_configuration.timing_scope = ...
+        'four search calls including replay and per-vehicle validation; excludes pair audit and export';
+end
+if ~save_outputs, return; end
 result.output_files = struct('effective_config_json', ...
     fullfile(output_dir,'effective_config_snapshot.json'),'effective_config_mat', ...
     fullfile(output_dir,'effective_config_snapshot.mat'),'result_json', ...
@@ -138,6 +198,7 @@ result.output_files = struct('effective_config_json', ...
     fullfile(output_dir,'day7_task4_result.mat'),'output_index', ...
     fullfile(output_dir,'output_index.json'),'stage_directories', ...
     {arrayfun(@(s)fullfile(output_dir,s.id),task.stages,'UniformOutput',false)});
+if uniform, result.output_files.stage_directories = {output_dir}; end
 [result.output_files.final_artifacts,result.final_metrics] = day7_task4_write_outputs( ...
     final_stage,final_stage.per_vehicle,geometry,vehicle, ...
     planner_base,output_dir,'day7_task4_final');
@@ -194,7 +255,7 @@ for k = 1:numel(ids)
 end
 end
 
-function [ok,report] = validateInitialPoses(vehicles,geometry,vehicle,planner)
+function [ok,report] = validateInitialPoses(vehicles,geometry,vehicle,planner,check_goals)
 %VALIDATEINITIALPOSES Check all configured poses and simultaneous starts.
 ok = true;
 checks = repmat(struct('vehicle_id','','kind','','valid',false,'detail',struct()), ...
@@ -225,7 +286,22 @@ for i = 1:numel(vehicles)-1
         ok = ok && ~hit;
     end
 end
-report = struct('valid',ok,'pose_checks',checks,'initial_pairs',pairs);
+goal_pairs = pairs([]);
+if check_goals
+    goal_pairs = pairs;
+    row = 0;
+    for i = 1:numel(vehicles)-1
+        for j = i+1:numel(vehicles)
+            row = row+1;
+            [~,a] = vehicleStates(vehicles(i)); [~,b] = vehicleStates(vehicles(j));
+            [hit,d] = check_vehicle_vehicle_collision(a,b,vehicle,vehicle,planner.day6);
+            goal_pairs(row) = struct('vehicle_a',vehicles(i).id,'vehicle_b',vehicles(j).id, ...
+                'overlap',hit,'minimum_distance_m',d.minimum_distance_m);
+            ok = ok && ~hit;
+        end
+    end
+end
+report = struct('valid',ok,'pose_checks',checks,'initial_pairs',pairs,'goal_pairs',goal_pairs);
 end
 
 function planner = plannerForVehicle(planner,id)
@@ -310,7 +386,7 @@ start_valid = abs(path.t(1))<=tolerance && abs(path.v(1))<=tolerance && ...
 first_motion_time = NaN;
 if numel(path.t)>1
     index = find(abs(path.v(2:end))>tolerance | hypot(diff(path.x),diff(path.y))>tolerance,1,'first');
-    if ~isempty(index), first_motion_time = path.t(index+1); end
+    if ~isempty(index), first_motion_time = path.t(index); end
 end
 report.start_state = struct('valid',start_valid,'time_s',path.t(1),'speed_mps',path.v(1), ...
     'first_motion_time_s',first_motion_time,'immediate_start_required',planner.day6.require_immediate_start, ...
@@ -342,7 +418,7 @@ record.validation = validation;
 record.failure_diagnostics = path.failure_diagnostics;
 record.reason = 'passed';
 if ~path.valid, record.reason = sprintf('search_error_%d',path.error_code); end
-if ~validation.valid, record.reason = strjoin(validation.failure_reasons,','); end
+if ~validation.valid, record.reason = failureReason(path,validation); end
 if path.valid && ~isempty(path.t)
     if isfield(path,'travelled_distance'), record.path_length_m = sum(abs(path.travelled_distance));
     else, record.path_length_m = sum(hypot(diff(path.x),diff(path.y))); end
@@ -359,6 +435,12 @@ function reason = failureReason(path,validation)
 %FAILUREREASON Convert a failed search or validation into a stable summary.
 % Keep validation evidence ahead of the planner error code so a path that was
 % found but rejected during replay remains distinguishable from search failure.
+if isstruct(path) && isfield(path,'valid') && ~path.valid && ...
+        isfield(path,'failure_diagnostics') && isfield(path.failure_diagnostics,'reason') && ...
+        ~isempty(path.failure_diagnostics.reason)
+    reason = char(path.failure_diagnostics.reason);
+    return;
+end
 if isstruct(validation) && isfield(validation,'failure_reasons') && ...
         ~isempty(validation.failure_reasons)
     reason = strjoin(validation.failure_reasons,',');
@@ -384,7 +466,7 @@ record = struct('id','','priority',0,'valid',false,'reason','not_planned', ...
     'planning_time_s',0,'error_code',NaN,'path_length_m',NaN,'arrival_time_s',NaN, ...
     'maximum_speed_mps',NaN,'peak_lateral_acceleration_mps2',NaN, ...
     'longitudinal_acceleration_range_mps2',[NaN,NaN],'search_statistics',struct(), ...
-    'validation',struct(),'failure_diagnostics',struct());
+    'validation',struct(),'failure_diagnostics',struct(),'effective_search_config',struct());
 end
 
 function [pairs,all_ok] = validatePairs(paths,ids,geometry,vehicle,planner,resource_planner)
@@ -433,6 +515,7 @@ stage = struct('id','','stage','','vehicle_ids',{{}},'valid',false,'reason','not
     'failure_vehicle_id','','failure_diagnostics',struct(),'paths',{{}}, ...
     'per_vehicle',struct([]),'pairwise_validation',struct([]),'pairs_valid',false, ...
     'completed_searches',0,'search_time_s',0,'stage_elapsed_s',0, ...
+    'independent_validation_time_s',0,'occupancy_update_time_s',0,'pairwise_validation_time_s',0, ...
     'effective_search_budget',struct(),'output_files',struct(),'metrics',struct());
 end
 

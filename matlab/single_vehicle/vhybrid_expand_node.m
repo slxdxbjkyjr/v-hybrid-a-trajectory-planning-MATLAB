@@ -30,6 +30,17 @@ has_context = ~isempty(st_map) || ~isempty(higher_priority_trajectories);
 gear = 1;
 if isfield(parent_node,'gear'), gear = parent_node.gear; end
 reverse_enabled = isfield(cfg,'reverse_enabled') && cfg.reverse_enabled;
+% Missing fields retain the historical pruning rule. This optional search
+% heuristic can skip feasible faster actions around moving obstacles; it
+% never replaces collision or dynamics checks on the children it accepts.
+dynamic_braking_pruning = true;
+if isfield(cfg,'dynamic_braking_dominance_pruning_enabled')
+    dynamic_braking_pruning = cfg.dynamic_braking_dominance_pruning_enabled;
+    if ~islogical(dynamic_braking_pruning) || ~isscalar(dynamic_braking_pruning)
+        error('VHybrid:InvalidDynamicBrakingPruning', ...
+            'dynamic_braking_dominance_pruning_enabled must be logical.');
+    end
+end
 if isfield(cfg, 'control_acceleration_samples_mps2')
     acceleration_values = double(cfg.control_acceleration_samples_mps2(:).');
 else
@@ -45,7 +56,8 @@ children = repmat(vhybrid_node(), 0, 1);
 statistics = struct('sampled', 0, 'valid', 0, 'collision_pruned', 0, ...
     'constraint_pruned', 0, 'dynamic_pruned',0,'resource_pruned',0, ...
     'lateral_acceleration_pruned',0, ...
-    'braking_midpoint_pruned',0,'faster_controls_skipped',0,'waiting_nodes',0,'horizon_pruned',0, ...
+    'braking_midpoint_pruned',0,'braking_collision_pruned',0, ...
+    'faster_controls_skipped',0,'waiting_nodes',0,'horizon_pruned',0, ...
     'reason_counts',struct(),'conflict_examples',{{}}, ...
     'reverse_nodes',0,'gear_switch_nodes',0,'gear_switch_pruned',0);
 % 同一转向按下一时刻速度由低到高扩展。减速中间节点不安全时，
@@ -126,7 +138,9 @@ for steering_angle = steering_values
             statistics.collision_pruned = statistics.collision_pruned + 1;
             statistics = countReason(statistics,'static_collision');
             if has_context && acceleration < 0 && intermediate_collision
-                statistics.braking_midpoint_pruned = statistics.braking_midpoint_pruned + 1;
+                statistics.braking_midpoint_pruned = statistics.braking_midpoint_pruned + ...
+                    double(intermediate_collision);
+                statistics.braking_collision_pruned = statistics.braking_collision_pruned+1;
                 statistics.faster_controls_skipped = statistics.faster_controls_skipped + ...
                     numel(acceleration_values)-acceleration_id;
                 break;
@@ -151,9 +165,12 @@ for steering_angle = steering_values
                 if numel(statistics.conflict_examples) < planner_config.day6.max_conflict_examples
                     statistics.conflict_examples{end+1} = report;
                 end
-                if acceleration < 0 && isfield(report,'has_intermediate_conflict') && ...
-                        report.has_intermediate_conflict
-                    statistics.braking_midpoint_pruned = statistics.braking_midpoint_pruned + 1;
+                intermediate_collision = isfield(report,'has_intermediate_conflict') && ...
+                    report.has_intermediate_conflict;
+                if dynamic_braking_pruning && acceleration < 0 && intermediate_collision
+                    statistics.braking_midpoint_pruned = statistics.braking_midpoint_pruned + ...
+                        double(intermediate_collision);
+                    statistics.braking_collision_pruned = statistics.braking_collision_pruned+1;
                     statistics.faster_controls_skipped = statistics.faster_controls_skipped + ...
                         numel(acceleration_values)-acceleration_id;
                     break;
