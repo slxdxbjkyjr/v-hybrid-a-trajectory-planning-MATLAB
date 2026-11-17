@@ -1,0 +1,39 @@
+{
+  "schema_version": "day8.path_optimization.v1",
+  "enabled": true,
+  "resample_spacing_m": 0.5,
+  "anchor_speed_tolerance_mps": 1e-8,
+  "anchor_position_tolerance_m": 1e-9,
+  "anchor_heading_tolerance_rad": 1e-6,
+  "corridor": {
+    "construction_method": "vehicle_clearance_local_axis_aligned_box",
+    "base_clearance_width_m": 0.8,
+    "minimum_half_width_m": 0.015,
+    "clearance_reserve_m": 0.02,
+    "heading_uncertainty_rad": 0.0872664626,
+    "paper_index_taper_enabled": true,
+    "minimum_neighbor_projection_m": 0.2
+  },
+  "weights": {
+    "smoothness": 1.0,
+    "reference": 0.2,
+    "spacing": 0.5,
+    "curvature_safety_factor": 0.95,
+    "curvature_linearization_iterations": 8,
+    "normalization": "each sum divided by its term count and resample_spacing_m squared"
+  },
+  "solver": {
+    "name": "quadprog",
+    "algorithm": "interior-point-convex",
+    "display": "off",
+    "max_iterations": 300,
+    "constraint_tolerance": 1e-8,
+    "optimality_tolerance": 1e-8,
+    "step_tolerance": 1e-12
+  },
+  "validation": {
+    "static_sweep_step_m": 0.05,
+    "static_sweep_heading_step_rad": 0.00872664626,
+    "steering_tolerance_rad": 1e-6
+  }
+}
